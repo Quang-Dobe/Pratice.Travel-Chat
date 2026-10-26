@@ -27,12 +27,21 @@ export function AppLayout() {
         sx={{
           width: drawerWidth,
           flexShrink: 0,
-          '& .MuiDrawer-paper': { width: drawerWidth, boxSizing: 'border-box' },
+          '& .MuiDrawer-paper': {
+            width: drawerWidth,
+            boxSizing: 'border-box',
+            bgcolor: 'background.paper',
+            borderRight: 1,
+            borderColor: 'divider',
+          },
         }}
       >
         <Sidebar me={data.me} conversations={data.conversations} />
       </Drawer>
-      <Box component="main" sx={{ flexGrow: 1, minHeight: '100vh' }}>
+      <Box
+        component="main"
+        sx={{ flexGrow: 1, minWidth: 0, minHeight: '100vh', bgcolor: 'background.default' }}
+      >
         <Outlet />
       </Box>
     </Box>

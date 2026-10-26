@@ -1,23 +1,27 @@
-import { Box, Button, Typography } from '@mui/material';
+import { Button, Typography } from '@mui/material';
+import { AuthCard } from '../components/AuthCard';
 
 export function LoginPage() {
   return (
-    <Box
-      sx={{
-        minHeight: '100vh',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 3,
-      }}
-    >
+    <AuthCard>
       <Typography variant="h4" component="h1">
         Travel Chat
       </Typography>
-      <Button variant="contained" onClick={() => window.location.assign('/auth/login')}>
+      <Typography color="text.secondary">
+        Plan trips by chatting: flights, hotels, weather and a day-by-day itinerary.
+      </Typography>
+      <Button
+        variant="contained"
+        size="large"
+        fullWidth
+        sx={{ mt: 1, py: 1.25 }}
+        onClick={() => window.location.assign('/auth/login')}
+      >
         Sign in
       </Button>
-    </Box>
+      <Typography variant="caption" color="text.secondary">
+        Use your work account. Access is by invitation.
+      </Typography>
+    </AuthCard>
   );
 }
