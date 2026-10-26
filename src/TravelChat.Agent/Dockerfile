@@ -3,11 +3,11 @@ COPY --from=ghcr.io/astral-sh/uv:0.13.5 /uv /uvx /bin/
 ENV UV_LINK_MODE=copy UV_COMPILE_BYTECODE=1 UV_PYTHON_DOWNLOADS=0
 WORKDIR /app
 RUN --mount=type=cache,target=/root/.cache/uv \
-    --mount=type=bind,source=q-agent/uv.lock,target=uv.lock \
-    --mount=type=bind,source=q-agent/pyproject.toml,target=pyproject.toml \
+    --mount=type=bind,source=src/TravelChat.Agent/uv.lock,target=uv.lock \
+    --mount=type=bind,source=src/TravelChat.Agent/pyproject.toml,target=pyproject.toml \
     uv sync --locked --no-install-project --no-dev
-COPY q-agent/pyproject.toml q-agent/uv.lock /app/
-COPY q-agent/q_agent /app/q_agent
+COPY src/TravelChat.Agent/pyproject.toml src/TravelChat.Agent/uv.lock /app/
+COPY src/TravelChat.Agent/q_agent /app/q_agent
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-editable --no-dev --reinstall-package q-agent
 RUN /app/.venv/bin/python -I -c "import importlib.util as u; assert u.find_spec('q_agent.conversations.router'), 'stale q_agent package'"

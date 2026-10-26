@@ -70,7 +70,7 @@ services:
   q-agent:
     build:
       context: .
-      dockerfile: q-agent/Dockerfile
+      dockerfile: src/TravelChat.Agent/Dockerfile
     environment:
       DATABASE_URL: postgresql://travelchat:travelchat@postgres:5432/qagent
       JWKS_URL: http://q-gateway:8081/.well-known/jwks.json
