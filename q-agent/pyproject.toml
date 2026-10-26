@@ -1,0 +1,50 @@
+[project]
+name = "q-agent"
+version = "0.1.0"
+description = "Travel chat agent service"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi[standard]>=0.115,<1",
+    "pydantic-settings>=2.6,<3",
+    "pyjwt[crypto]>=2.10,<3",
+    "psycopg[binary,pool]>=3.2,<4",
+    "langgraph>=0.6,<2",
+    "langgraph-checkpoint-postgres>=2.0,<4",
+    "langsmith>=0.4,<1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4,<10",
+    "pytest-asyncio>=1.0,<2",
+    "httpx>=0.28,<1",
+    "testcontainers[postgres]>=4.10,<5",
+    "ruff>=0.12,<1",
+    "mypy>=1.17,<3",
+]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["q_agent"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+strict = true
+files = ["q_agent", "tests"]
+namespace_packages = true
+explicit_package_bases = true
+python_version = "3.14"

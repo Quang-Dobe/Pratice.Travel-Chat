@@ -1,0 +1,2 @@
+CREATE DATABASE quser;
+CREATE DATABASE qagent;

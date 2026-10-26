@@ -1,0 +1,22 @@
+[
+  {
+    "oid": "66da8da2-aed9-47ec-b835-ed4ee254c029",
+    "name": "Noah Nelson",
+    "email": "noah.noreply.zero@gmail.com"
+  },
+  {
+    "oid": "8ae13ec2-a70a-4960-b27a-8d91a17f9b16",
+    "name": "Quang Tran",
+    "email": "tdquangcr@gmail.com"
+  },
+  {
+    "oid": "f3af3fef-e5c9-4fba-a5f6-b3c85c993bc6",
+    "name": "Test Account 1",
+    "email": "test1@quangtestingnew.onmicrosoft.com"
+  },
+  {
+    "oid": "70720358-b6b8-40dd-b22f-337a18ceae14",
+    "name": "Test Account 2",
+    "email": "test2@quangtestingnew.onmicrosoft.com"
+  }
+]

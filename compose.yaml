@@ -1,0 +1,123 @@
+name: travelchat
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: travelchat
+      POSTGRES_PASSWORD: travelchat
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres/init-databases.sql:/docker-entrypoint-initdb.d/init-databases.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U travelchat"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  q-user:
+    build:
+      context: .
+      dockerfile: src/TravelChat.User/Dockerfile
+    environment:
+      ConnectionStrings__Users: Host=postgres;Port=5432;Database=quser;Username=travelchat;Password=travelchat
+      InternalAuth__Authority: http://q-gateway:8081
+      Seed__UsersFile: /app/users.json
+    volumes:
+      - ./users.json:/app/users.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  q-gateway:
+    build:
+      context: .
+      dockerfile: src/TravelChat.Gateway/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      AzureAd__TenantId: ${AzureAd__TenantId:-}
+      AzureAd__ClientId: ${AzureAd__ClientId:-}
+      AzureAd__ClientSecret: ${AzureAd__ClientSecret:-}
+    depends_on:
+      q-user:
+        condition: service_healthy
+      q-agent:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  q-agent:
+    build:
+      context: .
+      dockerfile: q-agent/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://travelchat:travelchat@postgres:5432/qagent
+      JWKS_URL: http://q-gateway:8081/.well-known/jwks.json
+      LANGSMITH_TRACING: "true"
+      LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
+      LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  q-mcp:
+    build:
+      context: .
+      dockerfile: src/TravelChat.Mcp/Dockerfile
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
+  q-query:
+    build:
+      context: .
+      dockerfile: src/TravelChat.Query/Dockerfile
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:80/"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  pgdata:

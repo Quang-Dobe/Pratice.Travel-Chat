@@ -1,0 +1,11 @@
+**/bin
+**/obj
+**/.env*
+**/node_modules
+**/.venv
+**/__pycache__
+**/.mypy_cache
+**/.ruff_cache
+**/.pytest_cache
+**/.git
+.git
