@@ -3,6 +3,7 @@ import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
   ApiError,
+  getConversation,
   loadAppData,
   NotInvitedError,
   parseSseFrames,
@@ -12,6 +13,23 @@ import {
 } from './api';
 
 const encoder = new TextEncoder();
+
+const planCard = {
+  id: 'card1',
+  status: 'open',
+  flights: [{ id: 'f1', summary: 'Direct', priceUsd: 320.5, deepLink: 'https://example.com/f1' }],
+  hotels: [{ id: 'h1', summary: 'Hotel one', priceUsd: 400, deepLink: 'https://example.com/h1' }],
+  picked: { flightId: 'f1', hotelId: 'h1' },
+  days: [
+    {
+      date: '2026-11-01',
+      activities: ['Temple'],
+      weather: 'no forecast available yet',
+      costUsd: 90,
+    },
+  ],
+  budget: { dailyUsd: 90, totalUsd: 490, budgetUsd: 1250, overBudget: false },
+};
 
 const server = setupServer();
 
@@ -87,6 +105,60 @@ describe('parseSseFrames', () => {
     expect(events).toEqual([{ type: 'token', text: 'a' }]);
   });
 
+  it('parses the tool_call, plan_card, pills and notice events', () => {
+    const { events } = parseSseFrames(
+      [
+        'event: tool_call\ndata: {"kind":"retrieve","name":"flights__search","status":"started"}\n\n',
+        `event: plan_card\ndata: ${JSON.stringify(planCard)}\n\n`,
+        'event: pills\ndata: {"items":[{"text":"Approve","action":"approve"},{"text":"Reject","action":"reject"},{"text":"Add a hotel","action":null}]}\n\n',
+        'event: notice\ndata: {"message":"The AI model is not configured."}\n\n',
+      ].join(''),
+    );
+
+    expect(events).toEqual([
+      { type: 'tool_call', kind: 'retrieve', name: 'flights__search', status: 'started' },
+      { type: 'plan_card', card: planCard },
+      {
+        type: 'pills',
+        items: [
+          { text: 'Approve', action: 'approve' },
+          { text: 'Reject', action: 'reject' },
+          { text: 'Add a hotel', action: null },
+        ],
+      },
+      { type: 'notice', message: 'The AI model is not configured.' },
+    ]);
+  });
+
+  it('accepts an empty pills list', () => {
+    expect(parseSseFrames('event: pills\ndata: {"items":[]}\n\n').events).toEqual([
+      { type: 'pills', items: [] },
+    ]);
+  });
+
+  it('treats the old approval event as unknown', () => {
+    expect(() =>
+      parseSseFrames('event: approval\ndata: {"id":"a1","stop":"brief","options":[]}\n\n'),
+    ).toThrow('Unknown stream event: approval');
+  });
+
+  it('rejects a non-https deepLink and a bad tool_call status', () => {
+    for (const deepLink of ['http://example.com', 'javascript:alert(1)']) {
+      const card = { ...planCard, flights: [{ ...planCard.flights[0], deepLink }] };
+      expect(() => parseSseFrames(`event: plan_card\ndata: ${JSON.stringify(card)}\n\n`)).toThrow();
+    }
+    expect(() =>
+      parseSseFrames(
+        'event: tool_call\ndata: {"kind":"retrieve","name":"flights__search","status":"failed"}\n\n',
+      ),
+    ).toThrow();
+    expect(() =>
+      parseSseFrames(
+        'event: tool_call\ndata: {"kind":"flights","name":"search_flights","status":"failed"}\n\n',
+      ),
+    ).toThrow();
+  });
+
   it('rejects malformed data', () => {
     expect(() => parseSseFrames('event: token\ndata: not-json\n\n')).toThrow();
     expect(() => parseSseFrames('event: token\ndata: {"text":1}\n\n')).toThrow();
@@ -137,7 +209,96 @@ describe('loadAppData', () => {
   });
 });
 
+describe('getConversation', () => {
+  it('defaults the new fields for a payload without them', async () => {
+    server.use(
+      http.get('*/api/conversations/c1', () =>
+        HttpResponse.json({
+          id: 'c1',
+          title: 'Hello',
+          createdAt: '2026-10-01T00:00:00Z',
+          messages: [{ role: 'assistant', text: 'Hi' }],
+        }),
+      ),
+    );
+
+    expect(await getConversation('c1')).toEqual({
+      id: 'c1',
+      title: 'Hello',
+      createdAt: '2026-10-01T00:00:00Z',
+      messages: [{ role: 'assistant', text: 'Hi', toolCalls: [], planCard: null, pills: [] }],
+    });
+  });
+
+  it('parses tool calls, the plan card and pill objects', async () => {
+    server.use(
+      http.get('*/api/conversations/c1', () =>
+        HttpResponse.json({
+          id: 'c1',
+          title: 'Hello',
+          createdAt: '2026-10-01T00:00:00Z',
+          messages: [
+            {
+              role: 'assistant',
+              text: 'Pick one',
+              toolCalls: [{ name: 'hotels__search', kind: 'retrieve' }],
+              planCard,
+              pills: [{ text: 'Approve', action: 'approve' }, { text: 'Cheaper' }],
+            },
+          ],
+        }),
+      ),
+    );
+
+    const conversation = await getConversation('c1');
+
+    expect(conversation).not.toHaveProperty('pendingApprovalId');
+    expect(conversation.messages[0]).toEqual({
+      role: 'assistant',
+      text: 'Pick one',
+      toolCalls: [{ name: 'hotels__search', kind: 'retrieve', status: 'finished' }],
+      planCard,
+      pills: [
+        { text: 'Approve', action: 'approve' },
+        { text: 'Cheaper', action: null },
+      ],
+    });
+  });
+});
+
 describe('sendMessage', () => {
+  async function drain(action?: Parameters<typeof sendMessage>[2]): Promise<unknown> {
+    let received: unknown;
+    server.use(
+      http.post('*/api/conversations/c1/messages', async ({ request }) => {
+        received = await request.json();
+        return new HttpResponse(streamOf(['event: done\ndata: {}\n\n']), {
+          headers: { 'Content-Type': 'text/event-stream' },
+        });
+      }),
+    );
+    for await (const event of sendMessage('c1', 'Approve', action)) {
+      void event;
+    }
+    return received;
+  }
+
+  it('posts a null action for a plain message', async () => {
+    expect(await drain()).toEqual({ text: 'Approve', action: null });
+  });
+
+  it('posts the approve action with the card and both picks', async () => {
+    const action = { type: 'approve', cardId: 'card1', flightId: 'f1', hotelId: 'h1' } as const;
+
+    expect(await drain(action)).toEqual({ text: 'Approve', action });
+  });
+
+  it('posts the reject action with the card id', async () => {
+    const action = { type: 'reject', cardId: 'card1' } as const;
+
+    expect(await drain(action)).toEqual({ text: 'Approve', action });
+  });
+
   it('yields frames that are split across chunks', async () => {
     serveStream([
       'event: tok',

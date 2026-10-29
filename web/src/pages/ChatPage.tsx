@@ -21,14 +21,23 @@ import { keyframes } from '@mui/material/styles';
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from 'react';
 import { useLoaderData, useNavigate, useRevalidator, useRouteLoaderData } from 'react-router';
 import {
+  type Action,
   type AppData,
   type Conversation,
   createConversation,
+  getConversation,
   type Message,
+  type Picked,
+  type Pill,
+  type PlanCard as PlanCardData,
+  type StreamEvent,
   sendMessage,
   UnauthorizedError,
 } from '../api/api';
 import { initials } from '../components/initials';
+import { PlanCard } from '../components/PlanCard';
+import { SuggestionPills } from '../components/SuggestionPills';
+import { ToolProgress } from '../components/ToolProgress';
 import { brandGradient } from '../theme';
 
 function isAbort(error: unknown): boolean {
@@ -64,8 +73,73 @@ function TypingDots() {
   );
 }
 
-function MessageBubble({ message, userInitials }: { message: Message; userInitials: string }) {
+type ChatMessage = Message & { notice?: string };
+
+function emptyAssistant(): ChatMessage {
+  return { role: 'assistant', text: '', toolCalls: [], planCard: null, pills: [] };
+}
+
+function latestCardIndex(messages: ChatMessage[]): number {
+  return messages.findLastIndex((message) => message.planCard !== null);
+}
+
+function applyEvent(message: ChatMessage, event: StreamEvent): ChatMessage {
+  switch (event.type) {
+    case 'token':
+      return { ...message, text: message.text + event.text };
+    case 'tool_call': {
+      const { kind, name, status } = event;
+      if (status === 'started') {
+        return { ...message, toolCalls: [...message.toolCalls, { kind, name, status }] };
+      }
+      const openIndex = message.toolCalls.findLastIndex(
+        (call) => call.name === name && call.status === 'started',
+      );
+      if (openIndex === -1) {
+        return { ...message, toolCalls: [...message.toolCalls, { kind, name, status }] };
+      }
+      return {
+        ...message,
+        toolCalls: message.toolCalls.map((call, index) =>
+          index === openIndex ? { ...call, status } : call,
+        ),
+      };
+    }
+    case 'plan_card':
+      return { ...message, planCard: event.card };
+    case 'pills':
+      return { ...message, pills: event.items };
+    case 'notice':
+      return { ...message, notice: event.message };
+    case 'done':
+      return message;
+  }
+}
+
+type MessageBubbleProps = {
+  message: ChatMessage;
+  userInitials: string;
+  isLast: boolean;
+  streaming: boolean;
+  cardInteractive: boolean;
+  picked: Picked | null;
+  onPickPill: (pill: Pill) => void;
+  onPickOptions: (cardId: string, picked: Picked) => void;
+};
+
+function MessageBubble({
+  message,
+  userInitials,
+  isLast,
+  streaming,
+  cardInteractive,
+  picked,
+  onPickPill,
+  onPickOptions,
+}: MessageBubbleProps) {
   const isUser = message.role === 'user';
+  const showDots = !isUser && message.text === '' && !message.notice && streaming && isLast;
+  const { planCard } = message;
   return (
     <Box
       sx={{
@@ -91,6 +165,7 @@ function MessageBubble({ message, userInitials }: { message: Message; userInitia
           px: 2,
           py: 1.25,
           maxWidth: '75%',
+          ...(planCard ? { width: '75%' } : {}),
           borderRadius: 3,
           ...(isUser
             ? { bgcolor: 'primary.main', color: 'primary.contrastText', borderTopRightRadius: 4 }
@@ -100,9 +175,26 @@ function MessageBubble({ message, userInitials }: { message: Message; userInitia
         <Typography variant="caption" component="p" sx={{ fontWeight: 600, opacity: 0.75 }}>
           {isUser ? 'You' : 'Assistant'}
         </Typography>
+        {!isUser && <ToolProgress toolCalls={message.toolCalls} />}
         <Typography component="p" sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
-          {message.text === '' && !isUser ? <TypingDots /> : message.text}
+          {showDots ? <TypingDots /> : message.text}
         </Typography>
+        {message.notice && (
+          <Alert severity="info" sx={{ mt: 1 }}>
+            {message.notice}
+          </Alert>
+        )}
+        {planCard && picked && (
+          <PlanCard
+            card={planCard}
+            picked={picked}
+            interactive={cardInteractive}
+            onPick={(next) => onPickOptions(planCard.id, next)}
+          />
+        )}
+        {!isUser && isLast && (
+          <SuggestionPills items={message.pills} disabled={streaming} onPick={onPickPill} />
+        )}
       </Paper>
     </Box>
   );
@@ -200,8 +292,9 @@ function ChatView({ conversation }: { conversation: Conversation | undefined }) 
   const revalidator = useRevalidator();
   const app = useRouteLoaderData<AppData | undefined>('app');
   const [conversationId, setConversationId] = useState(conversation?.id);
-  const [messages, setMessages] = useState<Message[]>(conversation?.messages ?? []);
+  const [messages, setMessages] = useState<ChatMessage[]>(conversation?.messages ?? []);
   const [draft, setDraft] = useState('');
+  const [picks, setPicks] = useState<Record<string, Picked>>({});
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -216,20 +309,25 @@ function ChatView({ conversation }: { conversation: Conversation | undefined }) 
     }
   }, [messages]);
 
-  function appendToken(text: string) {
+  function applyToLast(event: StreamEvent) {
     setMessages((previous) =>
       previous.map((message, index) =>
-        index === previous.length - 1 ? { ...message, text: message.text + text } : message,
+        index === previous.length - 1 ? applyEvent(message, event) : message,
       ),
     );
   }
 
-  async function send(text: string) {
+  function pickedFor(card: PlanCardData): Picked {
+    return card.status === 'open' ? (picks[card.id] ?? card.picked) : card.picked;
+  }
+
+  async function send(text: string, action?: Action) {
     const controller = new AbortController();
     abortRef.current = controller;
     setError(null);
     setStreaming(true);
     const isNew = conversationId === undefined;
+    const before = messages;
     let id = conversationId;
     let appended = false;
     try {
@@ -239,18 +337,16 @@ function ChatView({ conversation }: { conversation: Conversation | undefined }) 
       }
       setMessages((previous) => [
         ...previous,
-        { role: 'user', text },
-        { role: 'assistant', text: '' },
+        { role: 'user', text, toolCalls: [], planCard: null, pills: [] },
+        emptyAssistant(),
       ]);
       appended = true;
-      for await (const event of sendMessage(id, text, controller.signal)) {
-        if (event.type === 'token') {
-          appendToken(event.text);
-        }
+      for await (const event of sendMessage(id, text, action, controller.signal)) {
+        applyToLast(event);
       }
     } catch (caught) {
       if (appended) {
-        setMessages((previous) => previous.slice(0, -2));
+        setMessages(before);
       }
       setDraft(text);
       if (caught instanceof UnauthorizedError) {
@@ -264,6 +360,9 @@ function ChatView({ conversation }: { conversation: Conversation | undefined }) 
       setStreaming(false);
       return;
     }
+    if (id !== undefined) {
+      await syncCards(id);
+    }
     setStreaming(false);
     try {
       if (isNew) {
@@ -275,12 +374,50 @@ function ChatView({ conversation }: { conversation: Conversation | undefined }) 
     }
   }
 
-  function submit(text: string) {
+  async function syncCards(id: string) {
+    try {
+      const fresh = await getConversation(id);
+      const byId = new Map<string, PlanCardData>();
+      for (const message of fresh.messages) {
+        if (message.planCard !== null) {
+          byId.set(message.planCard.id, message.planCard);
+        }
+      }
+      setMessages((previous) =>
+        previous.map((message) => {
+          const server = message.planCard === null ? undefined : byId.get(message.planCard.id);
+          return message.planCard !== null && server !== undefined
+            ? { ...message, planCard: server }
+            : message;
+        }),
+      );
+    } catch {
+      return;
+    }
+  }
+
+  function submit(text: string, action?: Action) {
     if (!text || streaming) {
       return;
     }
     setDraft('');
-    void send(text);
+    void send(text, action);
+  }
+
+  function pickPill(pill: Pill) {
+    const card = messages[latestCardIndex(messages)]?.planCard ?? null;
+    if (card && pill.action === 'approve') {
+      const { flightId, hotelId } = pickedFor(card);
+      submit(pill.text, { type: 'approve', cardId: card.id, flightId, hotelId });
+    } else if (card && pill.action === 'reject') {
+      submit(pill.text, { type: 'reject', cardId: card.id });
+    } else {
+      submit(pill.text);
+    }
+  }
+
+  function pickOptions(cardId: string, next: Picked) {
+    setPicks((previous) => ({ ...previous, [cardId]: next }));
   }
 
   function handleSubmit(event: FormEvent) {
@@ -289,6 +426,7 @@ function ChatView({ conversation }: { conversation: Conversation | undefined }) 
   }
 
   const isEmpty = messages.length === 0;
+  const latestIndex = latestCardIndex(messages);
   const userInitials = initials(app?.me?.name ?? '');
 
   return (
@@ -310,8 +448,20 @@ function ChatView({ conversation }: { conversation: Conversation | undefined }) 
           sx={{ maxWidth: 820, mx: 'auto' }}
         >
           {messages.map((message, index) => (
-            // biome-ignore lint/suspicious/noArrayIndexKey: messages are append-only with no stable id
-            <MessageBubble key={index} message={message} userInitials={userInitials} />
+            <MessageBubble
+              // biome-ignore lint/suspicious/noArrayIndexKey: messages are append-only with no stable id
+              key={index}
+              message={message}
+              userInitials={userInitials}
+              isLast={index === messages.length - 1}
+              streaming={streaming}
+              cardInteractive={
+                index === latestIndex && message.planCard?.status === 'open' && !streaming
+              }
+              picked={message.planCard ? pickedFor(message.planCard) : null}
+              onPickPill={pickPill}
+              onPickOptions={pickOptions}
+            />
           ))}
         </Stack>
       </Box>

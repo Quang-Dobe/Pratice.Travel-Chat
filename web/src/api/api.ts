@@ -40,19 +40,101 @@ export type ConversationItem = z.infer<typeof ConversationItem>;
 
 const ConversationList = z.object({ items: z.array(ConversationItem) });
 
+function isHttpsUrl(value: string): boolean {
+  try {
+    return new URL(value).protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+export const ToolStatus = z.enum(['started', 'finished']);
+export type ToolStatus = z.infer<typeof ToolStatus>;
+
+export const ToolCall = z.object({
+  name: z.string(),
+  kind: z.string(),
+  status: ToolStatus.default('finished'),
+});
+export type ToolCall = z.infer<typeof ToolCall>;
+
+export const NO_FORECAST = 'no forecast available yet';
+
+export const Option = z.object({
+  id: z.string(),
+  summary: z.string(),
+  priceUsd: z.number(),
+  deepLink: z.string().refine(isHttpsUrl, 'deepLink must be an https URL'),
+});
+export type Option = z.infer<typeof Option>;
+
+export const Picked = z.object({ flightId: z.string(), hotelId: z.string() });
+export type Picked = z.infer<typeof Picked>;
+
+export const PlanDay = z.object({
+  date: z.string(),
+  activities: z.array(z.string()).default([]),
+  weather: z.string().default(NO_FORECAST),
+  costUsd: z.number().default(0),
+});
+export type PlanDay = z.infer<typeof PlanDay>;
+
+export const PlanBudget = z.object({
+  dailyUsd: z.number(),
+  totalUsd: z.number(),
+  budgetUsd: z.number(),
+  overBudget: z.boolean(),
+});
+export type PlanBudget = z.infer<typeof PlanBudget>;
+
+export const PlanCard = z.object({
+  id: z.string(),
+  status: z.enum(['open', 'approved', 'replaced']),
+  flights: z.array(Option),
+  hotels: z.array(Option),
+  picked: Picked,
+  days: z.array(PlanDay),
+  budget: PlanBudget,
+});
+export type PlanCard = z.infer<typeof PlanCard>;
+
+export const Pill = z.object({
+  text: z.string(),
+  action: z.enum(['approve', 'reject']).nullable().default(null),
+});
+export type Pill = z.infer<typeof Pill>;
+
+export type Action =
+  | { type: 'approve'; cardId: string; flightId: string; hotelId: string }
+  | { type: 'reject'; cardId: string };
+
 export const Message = z.object({
   role: z.enum(['user', 'assistant']),
   text: z.string(),
+  toolCalls: z.array(ToolCall).default([]),
+  planCard: PlanCard.nullable().default(null),
+  pills: z.array(Pill).default([]),
 });
 export type Message = z.infer<typeof Message>;
 
-export const Conversation = ConversationItem.extend({ messages: z.array(Message) });
+export const Conversation = ConversationItem.extend({
+  messages: z.array(Message),
+});
 export type Conversation = z.infer<typeof Conversation>;
 
 const TokenData = z.object({ text: z.string() });
 const DoneData = z.object({});
+const ToolCallData = z.object({ kind: z.string(), name: z.string(), status: ToolStatus });
+const PillsData = z.object({ items: z.array(Pill) });
+const NoticeData = z.object({ message: z.string() });
 
-export type StreamEvent = { type: 'token'; text: string } | { type: 'done' };
+export type StreamEvent =
+  | { type: 'token'; text: string }
+  | { type: 'tool_call'; kind: string; name: string; status: ToolStatus }
+  | { type: 'plan_card'; card: PlanCard }
+  | { type: 'pills'; items: Pill[] }
+  | { type: 'notice'; message: string }
+  | { type: 'done' };
 
 export type AppData = {
   me: Me;
@@ -114,6 +196,14 @@ function toStreamEvent(event: string, data: string): StreamEvent {
   switch (event) {
     case 'token':
       return { type: 'token', text: TokenData.parse(payload).text };
+    case 'tool_call':
+      return { type: 'tool_call', ...ToolCallData.parse(payload) };
+    case 'plan_card':
+      return { type: 'plan_card', card: PlanCard.parse(payload) };
+    case 'pills':
+      return { type: 'pills', items: PillsData.parse(payload).items };
+    case 'notice':
+      return { type: 'notice', message: NoticeData.parse(payload).message };
     case 'done':
       DoneData.parse(payload);
       return { type: 'done' };
@@ -160,15 +250,15 @@ export function parseSseFrames(buffer: string): { events: StreamEvent[]; rest: s
   return { events, rest: rest + held };
 }
 
-export async function* sendMessage(
-  id: string,
-  text: string,
+async function* streamEvents(
+  path: string,
+  body: unknown,
   signal?: AbortSignal,
 ): AsyncGenerator<StreamEvent> {
-  const response = await apiFetch(`/api/conversations/${encodeURIComponent(id)}/messages`, {
+  const response = await apiFetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify(body),
     signal: signal ?? null,
   });
   if (!response.body) {
@@ -196,4 +286,17 @@ export async function* sendMessage(
   } finally {
     await reader.cancel().catch(() => undefined);
   }
+}
+
+export function sendMessage(
+  id: string,
+  text: string,
+  action?: Action | null,
+  signal?: AbortSignal,
+): AsyncGenerator<StreamEvent> {
+  return streamEvents(
+    `/api/conversations/${encodeURIComponent(id)}/messages`,
+    { text, action: action ?? null },
+    signal,
+  );
 }

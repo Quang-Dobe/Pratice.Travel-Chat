@@ -1,11 +1,17 @@
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
 import { setupServer } from 'msw/node';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { ApiError, type Conversation, getConversation } from '../api/api';
+import {
+  ApiError,
+  type Conversation,
+  getConversation,
+  type Message,
+  type PlanCard,
+} from '../api/api';
 import { ChatPage } from './ChatPage';
 
 const encoder = new TextEncoder();
@@ -76,10 +82,274 @@ const savedConversation: Conversation = {
   title: 'Hello',
   createdAt: '2026-10-01T00:00:00Z',
   messages: [
-    { role: 'user', text: 'Hello' },
-    { role: 'assistant', text: 'First part second part' },
+    { role: 'user', text: 'Hello', toolCalls: [], planCard: null, pills: [] },
+    { role: 'assistant', text: 'First part second part', toolCalls: [], planCard: null, pills: [] },
   ],
 };
+
+const eventStream = (frames: Uint8Array[]) =>
+  new HttpResponse(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of frames) {
+          controller.enqueue(chunk);
+        }
+        controller.close();
+      },
+    }),
+    { headers: { 'Content-Type': 'text/event-stream' } },
+  );
+
+function makeCard(overrides: Partial<PlanCard> = {}): PlanCard {
+  return {
+    id: 'card1',
+    status: 'open',
+    flights: [
+      { id: 'f1', summary: 'Flight one', priceUsd: 500, deepLink: 'https://example.com/f1' },
+      { id: 'f2', summary: 'Flight two', priceUsd: 650, deepLink: 'https://example.com/f2' },
+    ],
+    hotels: [
+      { id: 'h1', summary: 'Hotel one', priceUsd: 300, deepLink: 'https://example.com/h1' },
+      { id: 'h2', summary: 'Hotel two', priceUsd: 700, deepLink: 'https://example.com/h2' },
+    ],
+    picked: { flightId: 'f1', hotelId: 'h1' },
+    days: [{ date: '2026-11-01', activities: ['Temple'], weather: '18C', costUsd: 90 }],
+    budget: { dailyUsd: 90, totalUsd: 390, budgetUsd: 1000, overBudget: false },
+    ...overrides,
+  };
+}
+
+const approvalPills = [
+  { text: 'Approve', action: 'approve' },
+  { text: 'Reject', action: 'reject' },
+] as const;
+
+function withCard(card: PlanCard, pills: Message['pills'] = [...approvalPills]): Conversation {
+  return {
+    ...savedConversation,
+    messages: [
+      savedConversation.messages[0] as Message,
+      { role: 'assistant', text: 'Here is your plan', toolCalls: [], planCard: card, pills },
+    ],
+  };
+}
+
+function noApprovalsRoute() {
+  const calls: string[] = [];
+  server.use(
+    http.post('*/api/conversations/c1/approvals', ({ request }) => {
+      calls.push(request.url);
+      return new HttpResponse(null, { status: 404 });
+    }),
+  );
+  return calls;
+}
+
+describe('ChatPage plan card', () => {
+  it('posts the Approve pill with the card id and the current picks', async () => {
+    let body: unknown;
+    let loads = 0;
+    const approvals = noApprovalsRoute();
+    server.use(
+      http.get('*/api/conversations/c1', () => {
+        loads += 1;
+        return HttpResponse.json(
+          loads === 1
+            ? withCard(makeCard())
+            : withCard(
+                makeCard({
+                  status: 'approved',
+                  picked: { flightId: 'f1', hotelId: 'h2' },
+                  budget: { dailyUsd: 90, totalUsd: 790, budgetUsd: 1000, overBudget: false },
+                }),
+                [],
+              ),
+        );
+      }),
+      http.post('*/api/conversations/c1/messages', async ({ request }) => {
+        body = await request.json();
+        return eventStream([frame('token', { text: 'Trip confirmed' }), frame('done', {})]);
+      }),
+    );
+    renderChat('/c/c1');
+
+    await userEvent.click(await screen.findByRole('radio', { name: 'Hotel two' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Approve' }));
+
+    expect(await screen.findByText('Trip confirmed')).toBeInTheDocument();
+    expect(body).toEqual({
+      text: 'Approve',
+      action: { type: 'approve', cardId: 'card1', flightId: 'f1', hotelId: 'h2' },
+    });
+    const card = screen.getByRole('group', { name: 'Plan card' });
+    await waitFor(() => expect(within(card).getByText('Approved')).toBeInTheDocument());
+    expect(within(card).getByRole('radio', { name: 'Hotel two' })).toBeChecked();
+    expect(within(card).getByRole('radio', { name: 'Hotel two' })).toBeDisabled();
+    expect(within(card).getByText('Total $790.00 of $1,000.00 budget')).toBeInTheDocument();
+    expect(approvals).toEqual([]);
+  });
+
+  it('posts the Reject pill with its action and the card id', async () => {
+    let body: unknown;
+    server.use(
+      http.get('*/api/conversations/c1', () => HttpResponse.json(withCard(makeCard()))),
+      http.post('*/api/conversations/c1/messages', async ({ request }) => {
+        body = await request.json();
+        return eventStream([frame('token', { text: 'What should change?' }), frame('done', {})]);
+      }),
+    );
+    renderChat('/c/c1');
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Reject' }));
+
+    expect(await screen.findByText('What should change?')).toBeInTheDocument();
+    expect(body).toEqual({ text: 'Reject', action: { type: 'reject', cardId: 'card1' } });
+  });
+
+  it('sends a plain pill without an action', async () => {
+    let body: unknown;
+    server.use(
+      http.get('*/api/conversations/c1', () =>
+        HttpResponse.json(withCard(makeCard(), [{ text: 'Add a hotel', action: null }])),
+      ),
+      http.post('*/api/conversations/c1/messages', async ({ request }) => {
+        body = await request.json();
+        return eventStream([frame('token', { text: 'Sure thing' }), frame('done', {})]);
+      }),
+    );
+    renderChat('/c/c1');
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Add a hotel' }));
+
+    expect(await screen.findByText('Sure thing')).toBeInTheDocument();
+    expect(body).toEqual({ text: 'Add a hotel', action: null });
+  });
+
+  it('makes a loaded open card interactive again and keeps a replaced one read-only', async () => {
+    server.use(
+      http.get('*/api/conversations/c1', () =>
+        HttpResponse.json({
+          ...savedConversation,
+          messages: [
+            { role: 'user', text: 'Plan it', toolCalls: [], planCard: null, pills: [] },
+            {
+              role: 'assistant',
+              text: 'First plan',
+              toolCalls: [],
+              planCard: makeCard({ id: 'old', status: 'replaced' }),
+              pills: [],
+            },
+            { role: 'user', text: 'Cheaper hotel', toolCalls: [], planCard: null, pills: [] },
+            {
+              role: 'assistant',
+              text: 'Second plan',
+              toolCalls: [],
+              planCard: makeCard({ id: 'new' }),
+              pills: [...approvalPills],
+            },
+          ],
+        }),
+      ),
+    );
+    renderChat('/c/c1');
+
+    const cards = await screen.findAllByRole('group', { name: 'Plan card' });
+    const [oldCard, newCard] = cards;
+    expect(oldCard).toBeDefined();
+    expect(newCard).toBeDefined();
+    expect(within(oldCard as HTMLElement).getByText('Replaced')).toBeInTheDocument();
+    expect(within(oldCard as HTMLElement).getByRole('radio', { name: 'Hotel two' })).toBeDisabled();
+    expect(within(newCard as HTMLElement).getByRole('radio', { name: 'Hotel two' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
+  });
+
+  it('shows the over-budget warning from a loaded card', async () => {
+    server.use(
+      http.get('*/api/conversations/c1', () =>
+        HttpResponse.json(
+          withCard(
+            makeCard({
+              budget: { dailyUsd: 90, totalUsd: 790, budgetUsd: 600, overBudget: true },
+              picked: { flightId: 'f1', hotelId: 'h2' },
+              status: 'approved',
+            }),
+            [],
+          ),
+        ),
+      ),
+    );
+    renderChat('/c/c1');
+
+    const card = await screen.findByRole('group', { name: 'Plan card' });
+    expect(within(card).getByRole('alert')).toHaveTextContent(/over budget/i);
+    expect(within(card).getByText('Total $790.00 of $600.00 budget')).toBeInTheDocument();
+  });
+
+  it('renders a streamed plan card, then marks the earlier card replaced after done', async () => {
+    let loads = 0;
+    const earlier = makeCard({ id: 'old' });
+    const next = makeCard({ id: 'new' });
+    server.use(
+      http.get('*/api/conversations/c1', () => {
+        loads += 1;
+        return HttpResponse.json({
+          ...savedConversation,
+          messages: [
+            { role: 'user', text: 'Plan it', toolCalls: [], planCard: null, pills: [] },
+            {
+              role: 'assistant',
+              text: 'First plan',
+              toolCalls: [],
+              planCard: loads === 1 ? earlier : { ...earlier, status: 'replaced' },
+              pills: loads === 1 ? [...approvalPills] : [],
+            },
+            ...(loads === 1
+              ? []
+              : [
+                  { role: 'user', text: 'Cheaper hotel', toolCalls: [], planCard: null, pills: [] },
+                  {
+                    role: 'assistant',
+                    text: 'Second plan',
+                    toolCalls: [],
+                    planCard: next,
+                    pills: [...approvalPills],
+                  },
+                ]),
+          ],
+        });
+      }),
+      http.post('*/api/conversations/c1/messages', () =>
+        eventStream([
+          frame('token', { text: 'Second plan' }),
+          frame('plan_card', next),
+          frame('pills', { items: approvalPills }),
+          frame('done', {}),
+        ]),
+      ),
+    );
+    renderChat('/c/c1');
+    await screen.findByText('First plan');
+
+    await userEvent.type(screen.getByLabelText('Message'), 'Cheaper hotel');
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    expect(await screen.findByText('Second plan')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getAllByRole('group', { name: 'Plan card' })).toHaveLength(2),
+    );
+    const [oldCard, newCard] = screen.getAllByRole('group', { name: 'Plan card' });
+    await waitFor(() =>
+      expect(within(oldCard as HTMLElement).getByText('Replaced')).toBeInTheDocument(),
+    );
+    expect(within(newCard as HTMLElement).queryByText('Replaced')).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        within(newCard as HTMLElement).getByRole('radio', { name: 'Hotel two' }),
+      ).toBeEnabled(),
+    );
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeEnabled();
+  });
+});
 
 describe('ChatPage', () => {
   it('shows partial reply text before the full text arrives and re-enables the input after done', async () => {
@@ -143,6 +413,91 @@ describe('ChatPage', () => {
     await waitFor(() => expect(router.state.location.pathname).toBe('/c/c1'));
     await waitFor(() => expect(screen.getByText('First part second part')).toBeInTheDocument());
     await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
+  });
+
+  it('shows the tool chip while no token has arrived', async () => {
+    const { body, release } = gatedStream(
+      frame('tool_call', { kind: 'retrieve', name: 'flights__search', status: 'started' }),
+      [
+        frame('tool_call', { kind: 'retrieve', name: 'flights__search', status: 'finished' }),
+        frame('token', { text: 'Found flights' }),
+        frame('done', {}),
+      ],
+    );
+    server.use(
+      http.get('*/api/conversations/c1', () => HttpResponse.json(savedConversation)),
+      http.post(
+        '*/api/conversations/c1/messages',
+        () => new HttpResponse(body, { headers: { 'Content-Type': 'text/event-stream' } }),
+      ),
+      http.get('*/api/conversations', () => HttpResponse.json({ items: [] })),
+    );
+    renderChat('/c/c1');
+    await screen.findByText('First part second part');
+
+    await userEvent.type(screen.getByLabelText('Message'), 'Find flights');
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    const progress = await screen.findByRole('group', { name: 'Tool progress' });
+    expect(within(progress).getByText('flights__search')).toBeInTheDocument();
+    expect(screen.getByLabelText('Assistant is typing')).toBeInTheDocument();
+
+    release();
+
+    expect(await screen.findByText('Found flights')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
+    expect(screen.getAllByText('flights__search')).toHaveLength(1);
+  });
+
+  it('sends a clicked pill as the next user message and streams a reply', async () => {
+    server.use(
+      http.get('*/api/conversations/c1', () =>
+        HttpResponse.json({
+          ...savedConversation,
+          messages: [
+            savedConversation.messages[0],
+            {
+              ...savedConversation.messages[1],
+              pills: [{ text: 'Add a hotel', action: null }],
+            },
+          ],
+        }),
+      ),
+      http.post('*/api/conversations/c1/messages', () =>
+        eventStream([frame('token', { text: 'Sure thing' }), frame('done', {})]),
+      ),
+      http.get('*/api/conversations', () => HttpResponse.json({ items: [] })),
+    );
+    renderChat('/c/c1');
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Add a hotel' }));
+
+    expect(await screen.findByText('Sure thing')).toBeInTheDocument();
+    expect(screen.getByText('Add a hotel')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Add a hotel' })).not.toBeInTheDocument();
+    expect(screen.getAllByText('You')).toHaveLength(2);
+  });
+
+  it('shows a notice as an alert in the assistant bubble', async () => {
+    server.use(
+      http.get('*/api/conversations/c1', () => HttpResponse.json(savedConversation)),
+      http.post('*/api/conversations/c1/messages', () =>
+        eventStream([
+          frame('notice', { message: 'The AI model is not configured.' }),
+          frame('done', {}),
+        ]),
+      ),
+      http.get('*/api/conversations', () => HttpResponse.json({ items: [] })),
+    );
+    renderChat('/c/c1');
+    await screen.findByText('First part second part');
+
+    await userEvent.type(screen.getByLabelText('Message'), 'Again');
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('The AI model is not configured.');
+    await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
+    expect(screen.queryByLabelText('Assistant is typing')).not.toBeInTheDocument();
   });
 
   it('renders the loaded messages as plain text', async () => {
