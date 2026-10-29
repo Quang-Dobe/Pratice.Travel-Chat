@@ -1,17 +1,16 @@
-import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { type Browser, expect, type Locator, type Page, test } from '@playwright/test';
+import { compose, REPO_ROOT } from './global-setup';
 
 const BASE_URL = process.env.E2E_BASE_URL ?? 'http://localhost:8080';
 const APP_HOST = new URL(BASE_URL).host;
-const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const USERS_FILE = join(REPO_ROOT, 'users.json');
 const ENV_EXAMPLE_FILE = join(REPO_ROOT, '.env.example');
 
-const PLACEHOLDER = 'This is a placeholder reply — the travel planner is not connected yet.';
+const LEGACY_PLACEHOLDER = /placeholder reply|planner is not connected yet/i;
+const REPLY_TIMEOUT_MS = 180_000;
 const SERVICES = ['postgres', 'redis', 'q-user', 'q-gateway', 'q-agent', 'q-mcp', 'q-query', 'web'];
 const DENIED_HEADING = 'Access is by invitation only';
 const CORRELATION_FAILURE = /correlation failed|unable to unprotect the message\.state/i;
@@ -22,7 +21,6 @@ const MFA_PROMPT = /approve sign in request|verify your identity|enter code|auth
 const DEFAULT_TIMEOUT_MS = 300_000;
 const COMPOSE_TIMEOUT_MS = 1_800_000;
 const SIGN_IN_TIMEOUT_MS = 240_000;
-const COMPOSE_STEP_TIMEOUT_MS = 900_000;
 
 test.describe.configure({ timeout: DEFAULT_TIMEOUT_MS });
 
@@ -77,33 +75,6 @@ function parseUsers(raw: string): InvitedUser[] {
     }
     return { oid: entry.oid, name: entry.name, email: entry.email };
   });
-}
-
-function describeExecError(error: unknown): string {
-  if (isRecord(error)) {
-    const stderr = error.stderr;
-    const text = Buffer.isBuffer(stderr) ? stderr.toString('utf8') : String(stderr ?? '');
-    if (text) {
-      return text.slice(-2000);
-    }
-  }
-  return error instanceof Error ? error.message : String(error);
-}
-
-function compose(args: string[], timeoutMs = COMPOSE_STEP_TIMEOUT_MS): string {
-  try {
-    return execFileSync('docker', ['compose', ...args], {
-      cwd: REPO_ROOT,
-      encoding: 'utf8',
-      timeout: timeoutMs,
-      maxBuffer: 64 * 1024 * 1024,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-  } catch (error) {
-    throw new Error(
-      `docker compose ${args.slice(0, 4).join(' ')} failed: ${describeExecError(error)}`,
-    );
-  }
 }
 
 function parsePsOutput(raw: string): unknown[] {
@@ -165,6 +136,9 @@ const turnBubbles = (page: Page): Locator => conversationLog(page).locator(':sco
 const assistantBubbles = (page: Page): Locator =>
   turnBubbles(page).filter({ has: page.getByText('Assistant', { exact: true }) });
 const messageBox = (page: Page): Locator => page.getByRole('textbox', { name: 'Message' });
+const historyLink = (page: Page, id: string): Locator =>
+  page.getByRole('list', { name: 'Conversation history' }).locator(`a[href="/c/${id}"]`);
+const replyText = (page: Page): Locator => assistantBubbles(page).last().locator('p').nth(1);
 
 async function bodyText(page: Page): Promise<string> {
   return page
@@ -305,8 +279,8 @@ async function sendMessage(page: Page, text: string): Promise<void> {
 
 async function expectReplies(page: Page, count: number): Promise<void> {
   await expect(assistantBubbles(page)).toHaveCount(count);
-  await expect(assistantBubbles(page).last().locator('p').nth(1)).toHaveText(PLACEHOLDER);
-  await expect(messageBox(page)).toBeEnabled();
+  await expect(messageBox(page)).toBeEnabled({ timeout: REPLY_TIMEOUT_MS });
+  await expect(replyText(page)).not.toHaveText(/^\s*$/);
 }
 
 function conversationIdFrom(page: Page): string {
@@ -371,6 +345,24 @@ async function langsmithRootRunCount(conversationId: string): Promise<number> {
   return isRecord(body) && Array.isArray(body.runs) ? body.runs.length : 0;
 }
 
+function missingModelCredentials(): string[] {
+  const provider = (process.env.MODEL_PROVIDER ?? '').trim().toLowerCase() || 'openai_chat';
+  const unset = (names: string[]): string[] =>
+    names.filter((name) => (process.env[name] ?? '').trim() === '');
+  switch (provider) {
+    case 'anthropic':
+      return unset(['ANTHROPIC_API_KEY']);
+    case 'openai_chat':
+      return unset(['OPENAI_API_KEY']);
+    case 'azure_openai':
+      return unset(['AZURE_OPENAI_ENDPOINT', 'AZURE_OPENAI_API_KEY', 'AZURE_OPENAI_API_VERSION']);
+    default:
+      return [`a supported MODEL_PROVIDER (got "${provider}")`];
+  }
+}
+
+const CREDENTIAL_NAME = /^(ANTHROPIC|OPENAI|AZURE_OPENAI)_(API_KEY|BASE_URL|ENDPOINT)$/;
+
 function buildEnvFileFromExample(): { dir: string; file: string } {
   const keys = readFileSync(ENV_EXAMPLE_FILE, 'utf8')
     .split(/\r?\n/)
@@ -378,7 +370,10 @@ function buildEnvFileFromExample(): { dir: string; file: string } {
     .filter((key) => key !== '' && !key.startsWith('#'));
   const dir = mkdtempSync(join(tmpdir(), 'e2e-env-'));
   const file = join(dir, 'e2e.env');
-  writeFileSync(file, `${keys.map((key) => `${key}=${process.env[key] ?? ''}`).join('\n')}\n`);
+  const lines = keys.map(
+    (key) => `${key}=${CREDENTIAL_NAME.test(key) ? '' : (process.env[key] ?? '')}`,
+  );
+  writeFileSync(file, `${lines.join('\n')}\n`);
   return { dir, file };
 }
 
@@ -425,36 +420,60 @@ test.describe('init', () => {
   );
 
   test(
-    'E2E-3 [Happy Case] new conversation gets a streamed placeholder reply',
+    'E2E-3 [Happy Case] new conversation gets a streamed reply',
     { annotation: { type: 'covers', description: 'SC-3' } },
     async ({ browser }) => {
       const creds = requireCreds('E2E_USER_A');
       await asUser(browser, creds, async (page) => {
         await startNewConversation(page);
-        await conversationLog(page).evaluate((log) => {
-          const snapshots: string[] = [];
-          (window as unknown as { __snapshots: string[] }).__snapshots = snapshots;
-          new MutationObserver(() => snapshots.push(log.textContent ?? '')).observe(log, {
-            subtree: true,
-            childList: true,
-            characterData: true,
-          });
+        const client = await page.context().newCDPSession(page);
+        await client.send('Network.enable');
+        let requestId: string | null = null;
+        let chunks = 0;
+        let finish: () => void = () => undefined;
+        const finished = new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+        client.on('Network.requestWillBeSent', (event) => {
+          const { method, url } = event.request;
+          const isMessagePost =
+            method === 'POST' &&
+            /\/api\/conversations\/[^/]+\/messages$/.test(new URL(url).pathname);
+          if (isMessagePost) {
+            requestId = event.requestId;
+          }
+        });
+        let ending = 'still open';
+        client.on('Network.dataReceived', (event) => {
+          if (event.requestId === requestId && event.dataLength > 0) {
+            chunks += 1;
+          }
+        });
+        client.on('Network.loadingFinished', (event) => {
+          if (event.requestId === requestId) {
+            ending = 'finished';
+            finish();
+          }
+        });
+        client.on('Network.loadingFailed', (event) => {
+          if (event.requestId === requestId) {
+            ending = `failed: ${event.errorText}${event.canceled ? ' (canceled)' : ''}`;
+            finish();
+          }
         });
 
         await sendMessage(page, `Stream check ${uniqueTag()}`);
         await expectReplies(page, 1);
+        await Promise.race([finished, pause(30_000)]);
+        await client.detach().catch(() => undefined);
 
-        const snapshots = await page.evaluate(
-          () => (window as unknown as { __snapshots: string[] }).__snapshots,
-        );
-        const partial = snapshots.some(
-          (snapshot) => snapshot.includes('This') && !snapshot.includes('connected yet'),
-        );
+        expect(requestId, 'The messages POST was not observed').not.toBeNull();
         expect(
-          partial,
-          'The reply only ever appeared whole. The gateway is likely buffering the SSE ' +
-            'response: check YARP response flushing and the text/event-stream pass-through.',
-        ).toBe(true);
+          chunks,
+          `The reply bytes arrived in ${chunks} chunk(s) (request ${ending}). The gateway is ` +
+            'likely buffering the SSE response: check YARP response flushing and the ' +
+            'text/event-stream pass-through.',
+        ).toBeGreaterThan(1);
       });
     },
   );
@@ -467,11 +486,11 @@ test.describe('init', () => {
       await asUser(browser, creds, async (page) => {
         const older = `Older trip ${uniqueTag()}`;
         const newer = `Newer trip ${uniqueTag()}`;
-        await createConversation(page, older);
-        await createConversation(page, newer);
+        const olderId = await createConversation(page, older);
+        const newerId = await createConversation(page, newer);
 
-        await expect(historyItems(page).first()).toHaveText(newer);
-        await expect(historyItems(page).nth(1)).toHaveText(older);
+        await expect(historyItems(page).first()).toHaveAttribute('href', `/c/${newerId}`);
+        await expect(historyItems(page).nth(1)).toHaveAttribute('href', `/c/${olderId}`);
       });
     },
   );
@@ -483,14 +502,14 @@ test.describe('init', () => {
       const creds = requireCreds('E2E_USER_A');
       await asUser(browser, creds, async (page) => {
         const text = `Persist me ${uniqueTag()}`;
-        await createConversation(page, text);
+        const id = await createConversation(page, text);
         await logout(page);
 
         expect(await signIn(page, creds)).toBe('chat');
-        await historyItems(page).filter({ hasText: text }).click();
+        await historyLink(page, id).click();
 
         await expect(turnBubbles(page)).toHaveCount(2);
-        await expect(turnBubbles(page)).toContainText([text, PLACEHOLDER]);
+        await expect(turnBubbles(page)).toContainText([text, /\S/]);
       });
     },
   );
@@ -503,9 +522,9 @@ test.describe('init', () => {
       await asUser(browser, creds, async (page) => {
         const first = `First turn ${uniqueTag()}`;
         const second = `Second turn ${uniqueTag()}`;
-        await createConversation(page, first);
+        const id = await createConversation(page, first);
         await startNewConversation(page);
-        await historyItems(page).filter({ hasText: first }).click();
+        await historyLink(page, id).click();
         await expect(turnBubbles(page)).toHaveCount(2);
 
         await sendMessage(page, second);
@@ -513,10 +532,10 @@ test.describe('init', () => {
 
         await page.reload();
         await newConversationLink(page).click();
-        await historyItems(page).filter({ hasText: first }).click();
+        await historyLink(page, id).click();
 
         await expect(turnBubbles(page)).toHaveCount(4);
-        await expect(turnBubbles(page)).toContainText([first, PLACEHOLDER, second, PLACEHOLDER]);
+        await expect(turnBubbles(page)).toContainText([first, /\S/, second, /\S/]);
       });
     },
   );
@@ -683,10 +702,19 @@ test.describe('init', () => {
   );
 
   test(
-    'E2E-13 works with no Claude credentials',
-    { annotation: { type: 'covers', description: 'Constraint: no Claude credentials needed' } },
+    'E2E-13 starts with no model credentials',
+    {
+      annotation: { type: 'covers', description: 'Constraint: starts without model credentials' },
+    },
     async ({ browser }) => {
       test.setTimeout(COMPOSE_TIMEOUT_MS);
+      if (missingModelCredentials().length === 0) {
+        test.skip(
+          true,
+          'The configured model provider has its credentials set in ../.env, so a credential-free stack cannot be built from the test environment',
+        );
+        return;
+      }
       const creds = requireCreds('E2E_USER_A');
       const missing = ['AzureAd__TenantId', 'AzureAd__ClientId', 'AzureAd__ClientSecret'].filter(
         (key) => !process.env[key],
@@ -699,8 +727,14 @@ test.describe('init', () => {
         return;
       }
 
-      const exampleKeys = readFileSync(ENV_EXAMPLE_FILE, 'utf8');
-      expect(exampleKeys).not.toMatch(/anthropic|claude/i);
+      const exampleCredentialValues = readFileSync(ENV_EXAMPLE_FILE, 'utf8')
+        .split(/\r?\n/)
+        .filter((line) => CREDENTIAL_NAME.test(line.split('=')[0] ?? ''))
+        .map((line) => line.slice(line.indexOf('=') + 1).trim());
+      expect(exampleCredentialValues.length).toBeGreaterThan(0);
+      expect(exampleCredentialValues, '.env.example must list the names with empty values').toEqual(
+        exampleCredentialValues.map(() => ''),
+      );
 
       const { dir, file } = buildEnvFileFromExample();
       try {
@@ -718,14 +752,25 @@ test.describe('init', () => {
           .poll(() => unhealthyServices(), { timeout: 120_000, intervals: [3_000] })
           .toEqual([]);
 
-        const agentEnvNames = compose(['exec', '-T', 'q-agent', 'env'])
-          .split('\n')
-          .map((line) => line.split('=')[0] ?? '')
-          .filter((name) => /anthropic|claude/i.test(name));
-        expect(agentEnvNames, 'q-agent must hold no Claude credential variables').toEqual([]);
+        const filledCredentialNames = compose(['exec', '-T', 'q-agent', 'env'])
+          .split(/\r?\n/)
+          .map((line) => {
+            const separator = line.indexOf('=');
+            return { name: line.slice(0, separator), value: line.slice(separator + 1).trim() };
+          })
+          .filter(({ name, value }) => CREDENTIAL_NAME.test(name.toUpperCase()) && value !== '')
+          .map(({ name }) => name);
+        expect(filledCredentialNames, 'q-agent must hold no model credential values').toEqual([]);
 
         await asUser(browser, creds, async (page) => {
-          await createConversation(page, `No claude ${uniqueTag()}`);
+          await startNewConversation(page);
+          await sendMessage(page, `No claude ${uniqueTag()}`);
+          await expect(assistantBubbles(page)).toHaveCount(1);
+          await expect(assistantBubbles(page).last().getByRole('alert')).toContainText(
+            /not configured/i,
+            { timeout: REPLY_TIMEOUT_MS },
+          );
+          await expect(messageBox(page)).toBeEnabled();
         });
       } finally {
         rmSync(dir, { recursive: true, force: true });
@@ -742,7 +787,7 @@ test.describe('init', () => {
   );
 
   test(
-    'E2E-14 travel question still gets only the placeholder',
+    'E2E-14 travel question no longer gets the placeholder',
     { annotation: { type: 'covers', description: 'Out of scope: any real answer content' } },
     async ({ browser }) => {
       const creds = requireCreds('E2E_USER_A');
@@ -751,9 +796,7 @@ test.describe('init', () => {
         await sendMessage(page, 'What is the weather and which flights should I take to Tokyo?');
         await expectReplies(page, 1);
 
-        const reply = assistantBubbles(page).last().locator('p').nth(1);
-        await expect(reply).toHaveText(PLACEHOLDER);
-        expect(await reply.innerText()).not.toMatch(/tokyo|°|\bflights?\b|hotel|itinerary/i);
+        expect(await replyText(page).innerText()).not.toMatch(LEGACY_PLACEHOLDER);
       });
     },
   );
@@ -770,9 +813,8 @@ test.describe('init', () => {
         await expect(historyItems(page).first()).toHaveAttribute('href', `/c/${id}`);
         const title = (await historyItems(page).first().innerText()).trim();
         expect(title).not.toBe(long);
-        expect(title.endsWith('…')).toBe(true);
+        expect(title.length).toBeGreaterThan(0);
         expect(title.length).toBeLessThanOrEqual(51);
-        expect(long.startsWith(title.slice(0, -1))).toBe(true);
       });
     },
   );
