@@ -11,6 +11,10 @@ dependencies = [
     "langgraph>=0.6,<2",
     "langgraph-checkpoint-postgres>=2.0,<4",
     "langsmith>=0.4,<1",
+    "anthropic>=1,<2",
+    "langchain-anthropic>=1.7,<2",
+    "langchain-openai>=1.7,<2",
+    "langchain-mcp-adapters>=0.3,<1",
 ]
 
 [dependency-groups]
@@ -28,7 +32,7 @@ requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["q_agent"]
+packages = ["src"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -38,13 +42,17 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py314"
+src = ["."]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+
 [tool.mypy]
 strict = true
-files = ["q_agent", "tests"]
+files = ["src", "tests"]
 namespace_packages = true
 explicit_package_bases = true
 python_version = "3.14"

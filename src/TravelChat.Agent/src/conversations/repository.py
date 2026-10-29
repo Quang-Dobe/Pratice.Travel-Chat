@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 from psycopg.rows import class_row
 
 if TYPE_CHECKING:
-    from q_agent.main import DictRowPool
+    from src.main import DictRowPool
 
 LIST_SQL = """
 SELECT id, title, created_at FROM conversations
@@ -22,6 +22,12 @@ RETURNING id, title, created_at
 
 GET_SQL = """
 SELECT id, title, created_at FROM conversations
+WHERE id = %s AND user_id = %s
+"""
+
+
+SET_TITLE_SQL = """
+UPDATE conversations SET title = %s
 WHERE id = %s AND user_id = %s
 """
 
@@ -52,6 +58,11 @@ async def create(pool: DictRowPool, uid: UUID, title: str) -> ConversationRow:
     if row is None:
         raise RuntimeError("INSERT ... RETURNING produced no row")
     return row
+
+
+async def set_title(pool: DictRowPool, id_: UUID, uid: UUID, title: str) -> None:
+    async with pool.connection() as connection:
+        await connection.execute(SET_TITLE_SQL, (title, id_, uid))
 
 
 async def get_for_user(pool: DictRowPool, id_: UUID, uid: UUID) -> ConversationRow | None:

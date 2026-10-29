@@ -77,8 +77,22 @@ services:
       LANGSMITH_TRACING: "true"
       LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
       LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-}
+      MODEL_PROVIDER: ${MODEL_PROVIDER:-}
+      MODEL_LOW: ${MODEL_LOW:-}
+      MODEL_MEDIUM: ${MODEL_MEDIUM:-}
+      MODEL_HIGH: ${MODEL_HIGH:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
+      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
+      AZURE_OPENAI_API_VERSION: ${AZURE_OPENAI_API_VERSION:-}
+      MCP_URL: http://q-mcp:8080/mcp
     depends_on:
       postgres:
+        condition: service_healthy
+      q-mcp:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=3)"]
@@ -91,6 +105,11 @@ services:
     build:
       context: .
       dockerfile: src/TravelChat.Mcp/Dockerfile
+    environment:
+      Query__BaseUrl: http://q-query:8080
+    depends_on:
+      q-query:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health/live"]
       interval: 5s
@@ -102,6 +121,14 @@ services:
     build:
       context: .
       dockerfile: src/TravelChat.Query/Dockerfile
+    environment:
+      ConnectionStrings__Redis: redis:6379
+      ProviderKeys__flights__serpapi: ${SERPAPI_API_KEY:-}
+      ProviderKeys__hotels__serpapi: ${SERPAPI_API_KEY:-}
+      ProviderKeys__places__geoapify: ${GEOAPIFY_API_KEY:-}
+    depends_on:
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health/live"]
       interval: 5s

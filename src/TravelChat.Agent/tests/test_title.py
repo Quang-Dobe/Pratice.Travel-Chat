@@ -1,4 +1,4 @@
-from q_agent.conversations.title import make_title
+from src.conversations.title import make_title
 
 
 def test_short_text_is_unchanged() -> None:

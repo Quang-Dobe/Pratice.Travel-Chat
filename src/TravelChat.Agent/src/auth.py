@@ -7,7 +7,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
-from q_agent.settings import Settings, get_settings
+from src.settings import Settings, get_settings
 
 REQUIRED_CLAIMS = ["exp", "iss", "aud", "sub", "uid"]
 JWKS_TIMEOUT_SECONDS = 3

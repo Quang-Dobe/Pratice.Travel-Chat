@@ -11,9 +11,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from q_agent.auth import CurrentUserDep, SigningKey, get_jwks_client
-from q_agent.main import http_exception_handler, validation_exception_handler
-from q_agent.settings import Settings, get_settings
+from src.auth import CurrentUserDep, SigningKey, get_jwks_client
+from src.main import http_exception_handler, validation_exception_handler
+from src.settings import Settings, get_settings
 
 ISSUER = "q-gateway"
 AUDIENCE = "q-internal"

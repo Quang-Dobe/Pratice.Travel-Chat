@@ -12,9 +12,13 @@ from psycopg.rows import DictRow, dict_row
 from psycopg_pool import AsyncConnectionPool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from q_agent.conversations.graph import build_graph
-from q_agent.conversations.router import router as conversations_router
-from q_agent.settings import get_settings
+from src.agents.registry import build_agents
+from src.conversations.router import router as conversations_router
+from src.graph.builder import build_graph
+from src.graph.deps import PlannerDeps
+from src.providers.base import make_provider
+from src.settings import get_settings
+from src.utils.tools import load_tools
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 PROBLEM_JSON = "application/problem+json"
@@ -35,8 +39,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await connection.execute(schema)
         checkpointer = AsyncPostgresSaver(pool)
         await checkpointer.setup()
+        settings = get_settings()
+        provider = make_provider(settings)
+        tools = await load_tools(settings)
+        app.state.planner = PlannerDeps(
+            provider=provider,
+            settings=settings,
+            tools=tools,
+            agents=build_agents(provider, tools, settings),
+        )
         app.state.pool = pool
-        app.state.graph = build_graph(checkpointer)
+        app.state.graph = build_graph(checkpointer, app.state.planner)
         yield
 
 
