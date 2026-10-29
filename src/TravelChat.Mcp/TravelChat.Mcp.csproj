@@ -4,4 +4,12 @@
     <ProjectReference Include="..\TravelChat.ServiceDefaults\TravelChat.ServiceDefaults.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="ModelContextProtocol.AspNetCore" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="TravelChat.Mcp.Tests" />
+  </ItemGroup>
+
 </Project>

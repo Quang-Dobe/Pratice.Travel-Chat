@@ -8,6 +8,8 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/TravelChat.Gateway.Tests/TravelChat.Gateway.Tests.csproj" />
+    <Project Path="tests/TravelChat.Mcp.Tests/TravelChat.Mcp.Tests.csproj" />
+    <Project Path="tests/TravelChat.Query.Tests/TravelChat.Query.Tests.csproj" />
     <Project Path="tests/TravelChat.User.Tests/TravelChat.User.Tests.csproj" />
   </Folder>
 </Solution>
