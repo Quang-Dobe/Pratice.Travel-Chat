@@ -133,7 +133,8 @@ def test_each_spec_names_its_agent_and_prompts_with_its_tools() -> None:
     for spec in SPECS:
         assert spec.name == f"{spec.domain}_agent"
         assert all(tool.name.startswith(f"{spec.domain}__") for tool in spec.tools)
-        assert all(f"- {tool.name}: " in spec.prompt() for tool in spec.tools)
+        tools = spec.prompt().split("<tools>")[1].split("</tools>")[0]
+        assert all(f"- {tool.name}: " in tools for tool in spec.tools)
         assert spec.when_to_use in spec.tool_description()
 
 
