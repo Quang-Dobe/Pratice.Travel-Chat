@@ -30,6 +30,7 @@ class OpenAIChatProvider:
             "api_key": SecretStr(key),
             "max_tokens": MAX_TOKENS,
             "default_headers": {"api-key": key},
+            "stream_usage": True,
         }
         base_url = self._settings.openai_base_url.strip()
         if base_url:

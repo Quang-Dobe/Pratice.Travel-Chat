@@ -16,5 +16,6 @@ class AzureOpenAIProvider(OpenAIChatProvider):
             "api_version": self._settings.azure_openai_api_version.strip(),
             "api_key": SecretStr(self._settings.azure_key()),
             "max_tokens": MAX_TOKENS,
+            "stream_usage": True,
         }
         return AzureChatOpenAI(**kwargs)

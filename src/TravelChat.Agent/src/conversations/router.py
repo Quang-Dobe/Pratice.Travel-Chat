@@ -20,6 +20,7 @@ from src.graph.deps import PlannerDeps
 from src.graph.state import Pill, PlanCard, PlannerState, card_payload
 from src.utils.messages import ACTION, TURN_TOOLS
 from src.utils.tools import tool_kind
+from src.utils.usage import tracing_callbacks
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +185,8 @@ async def _stream_turn(
 ) -> AsyncIterator[ServerSentEvent]:
     graph: ChatGraph = request.app.state.graph
     config = thread_config(user.uid, conversation.id)
+    if callbacks := tracing_callbacks():
+        config["callbacks"] = callbacks
     stream: AsyncIterator[Any] = graph.astream(
         turn_input, config, stream_mode=STREAM_MODES, version="v2", subgraphs=True
     )
