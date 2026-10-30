@@ -32,9 +32,23 @@ not change them.
 </criteria>
 
 <change>
-flights or hotel only when the latest message asks for a different flight or hotel than the one \
-on the plan card; otherwise null.
+Set change from the words of the latest message only:
+- hotel when it asks for another hotel, room, or place to stay;
+- flights when it asks for another flight, airline, or flight time;
+- none otherwise. A message about the budget, dates, length, travellers, or interests is none, \
+even when the budget affects the hotel price.
 </change>
+
+<examples>
+"Plan a week in Seoul for 2, flying from Hanoi" -> destination "Seoul", origin "Hanoi", \
+length_days 7, travellers 2, change "none"
+"3 days in Paris, low budget" -> destination "Paris", length_days 3, budget_level "low", change \
+"none"
+"Switch to a mid budget" -> budget_level "mid", change "none"
+"Make the trip 6 days" -> length_days 6, change "none"
+"Show me a hotel near the station" -> hotel_criteria "near the station", change "hotel"
+"I'd rather fly nonstop" -> flight_criteria "nonstop", change "flights"
+</examples>
 """
 
 CRITERIA_FIELDS = {"flight_criteria": "flights", "hotel_criteria": "hotels"}
@@ -55,8 +69,8 @@ class Details(BaseModel):
 
 
 class Extraction(BaseModel):
+    change: Literal["none", "flights", "hotel"]
     brief: Details
-    change: Literal["flights", "hotel"] | None
 
 
 def _current(brief: Brief, criteria: Criteria) -> dict[str, Any]:
@@ -104,4 +118,4 @@ async def run(state: PlannerState, deps: PlannerDeps) -> dict[str, Any]:
     for field in CRITERIA_FIELDS:
         if field in updated:
             details[field] = updated[field]
-    return {"details": details, "change": result.change}
+    return {"details": details, "change": None if result.change == "none" else result.change}

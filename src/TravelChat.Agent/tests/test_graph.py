@@ -150,7 +150,9 @@ def classification(
 ) -> Turn:
     fields: dict[str, Any] = dict.fromkeys(DETAIL_FIELDS)
     fields.update(details)
-    extraction = Extraction(brief=Details(**fields), change=change) if route == "plan" else None
+    extraction = (
+        Extraction(brief=Details(**fields), change=change or "none") if route == "plan" else None
+    )
     return Classification(verdict=verdict, route=route), extraction
 
 
@@ -484,6 +486,43 @@ def test_classify_input_tags_each_section_and_isolates_the_latest_message() -> N
     assert text.endswith("<latest_message>Suggest food spots</latest_message>")
 
 
+def test_classify_input_shows_the_planner_question_and_the_missing_fields() -> None:
+    state = cast(
+        "PlannerState",
+        {
+            "messages": [
+                HumanMessage("5 days in Tokyo"),
+                AIMessage("Where will you be travelling from?"),
+                HumanMessage("From Singapore (SIN), starting 2026-11-03."),
+            ],
+            "trip": {"brief": {"destination": "Tokyo", "length_days": 5}},
+        },
+    )
+
+    text = classify_module.classify_input(state)
+
+    assert "<missing_fields>origin, dates or trip length</missing_fields>" in text
+    assert (
+        "<last_assistant_message>Where will you be travelling from?</last_assistant_message>"
+        "\n\n<latest_message>" in text
+    )
+
+
+def test_classify_input_leaves_out_missing_fields_when_the_brief_is_complete() -> None:
+    state = cast(
+        "PlannerState",
+        {
+            "messages": [HumanMessage("hi")],
+            "trip": {"brief": dict(STORED_BRIEF)},
+        },
+    )
+
+    text = classify_module.classify_input(state)
+
+    assert "<missing_fields>" not in text
+    assert "<last_assistant_message>" not in text
+
+
 def test_classify_input_escapes_user_text_that_looks_like_a_tag() -> None:
     state = cast(
         "PlannerState",
@@ -523,9 +562,19 @@ def extract_state(text: str) -> PlannerState:
 async def extract(chat: Chat, text: str, **brief: Any) -> dict[str, Any]:
     fields: dict[str, Any] = dict.fromkeys(DETAIL_FIELDS)
     fields.update(brief)
-    chat.provider.queues["Extraction"] = [Extraction(brief=Details(**fields), change=None)]
+    chat.provider.queues["Extraction"] = [Extraction(change="none", brief=Details(**fields))]
     update: dict[str, Any] = await extract_module.run(extract_state(text), chat.deps)
     return update
+
+
+async def test_a_hotel_change_from_the_model_reaches_the_update() -> None:
+    chat = Chat()
+    fields: dict[str, Any] = {**dict.fromkeys(DETAIL_FIELDS), **COPIED}
+    chat.provider.queues["Extraction"] = [Extraction(change="hotel", brief=Details(**fields))]
+
+    update = await extract_module.run(extract_state("find a cheaper hotel"), chat.deps)
+
+    assert update["change"] == "hotel"
 
 
 async def test_a_copied_brief_changes_nothing_even_when_reworded() -> None:

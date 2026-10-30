@@ -181,7 +181,9 @@ def classification(
 ) -> Turn:
     fields: dict[str, Any] = dict.fromkeys(DETAIL_FIELDS)
     fields.update(details)
-    extraction = Extraction(brief=Details(**fields), change=change) if route == "plan" else None
+    extraction = (
+        Extraction(brief=Details(**fields), change=change or "none") if route == "plan" else None
+    )
     return Classification(verdict=verdict, route=route), extraction
 
 
