@@ -26,17 +26,19 @@ def money(value: float) -> str:
 
 
 def budget_text(summary: Budget) -> str:
-    hotel = round(summary["totalUsd"] - summary["dailyUsd"], 2)
     breakdown = (
-        f"{money(hotel)} hotel + {money(summary['dailyUsd'])} daily costs "
-        f"= {money(summary['totalUsd'])} total against a budget of {money(summary['budgetUsd'])}"
+        f"{money(summary['flightUsd'])} flight + {money(summary['hotelUsd'])} hotel + "
+        f"{money(summary['dailyUsd'])} daily costs = {money(summary['totalUsd'])} total"
     )
+    if summary["budgetUsd"] is None:
+        return f"Estimated cost: {breakdown}."
+    against = f"{breakdown} against a budget of {money(summary['budgetUsd'])}"
     if summary["overBudget"]:
         return (
-            f"Warning: this is over budget. {breakdown}. Flights are not counted. "
+            f"Warning: this is over budget. {against}. "
             "Nothing was changed, so you decide how to proceed."
         )
-    return f"Estimated cost: {breakdown}. Flights are listed but not counted."
+    return f"Estimated cost: {against}."
 
 
 def keep_pick(options: Sequence[Option], previous: str) -> str:
@@ -67,6 +69,7 @@ def _new_card(trip: Trip, cards: list[PlanCard], message_id: str) -> PlanCard:
         hotelId=keep_pick(hotels, previous["hotelId"]),
     )
     hotel = next((option for option in hotels if option["id"] == picked["hotelId"]), None)
+    flight = next((option for option in flights if option["id"] == picked["flightId"]), None)
     cost = daily_cost(brief)
     days = [
         Day(date=day["date"], activities=day["activities"], weather=day["weather"], costUsd=cost)
@@ -81,7 +84,12 @@ def _new_card(trip: Trip, cards: list[PlanCard], message_id: str) -> PlanCard:
         hotels=hotels,
         picked=picked,
         days=days,
-        budget=budget(brief, hotel["priceUsd"] if hotel else 0.0, len(trip_dates(brief))),
+        budget=budget(
+            brief,
+            hotel["priceUsd"] if hotel else 0.0,
+            flight["priceUsd"] if flight else 0.0,
+            len(trip_dates(brief)),
+        ),
     )
 
 

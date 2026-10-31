@@ -28,7 +28,14 @@ const planCard = {
       costUsd: 90,
     },
   ],
-  budget: { dailyUsd: 90, totalUsd: 490, budgetUsd: 1250, overBudget: false },
+  budget: {
+    flightUsd: 400,
+    hotelUsd: 400,
+    dailyUsd: 90,
+    totalUsd: 890,
+    budgetUsd: null,
+    overBudget: false,
+  },
 };
 
 const server = setupServer();

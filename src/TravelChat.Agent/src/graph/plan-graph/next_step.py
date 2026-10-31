@@ -8,6 +8,7 @@ from src.utils.trip import (
     Brief,
     Change,
     Criteria,
+    Focus,
     Part,
     Trip,
     apply_updates,
@@ -15,12 +16,14 @@ from src.utils.trip import (
     merge_parts,
     missing_fields,
     redo_for,
+    redo_for_focus,
     today,
 )
 
 RECORD_APPROVAL = "record_approval"
 ASK_CHANGE = "ask_change"
 ASK_MISSING = "ask_missing"
+ASK_BUDGET = "ask_budget"
 PLAN_CARD = "plan_card"
 PART_NODES: dict[Part, str] = {
     "flights": "search_flights",
@@ -59,16 +62,21 @@ async def run(state: PlannerState, deps: PlannerDeps) -> dict[str, Any]:
     criteria, criteria_changes = _criteria(trip.get("criteria"), details)
     requested = cast("Change | None", state.get("change"))
     changes = [*criteria_changes, *([requested] if requested is not None else [])]
-    parts = redo_for(changed_fields(before, brief), None)
+    changed = changed_fields(before, brief)
+    parts = redo_for(changed, None)
     for change in changes:
         parts = merge_parts(parts, redo_for(set(), change))
+    focus = cast("Focus | None", state.get("focus"))
+    if focus is not None:
+        parts = merge_parts(parts, redo_for_focus(focus))
+    ask_budget = "budget" in changed and not parts and bool(state.get("cards"))
     if not state.get("cards"):
         parts = list(PART_ORDER)
     trip["brief"] = brief
     trip["assumed"] = assumed
     trip["criteria"] = criteria
     trip["redo"] = merge_parts(trip.get("redo", []), parts)
-    return {"trip": trip}
+    return {"trip": trip, "ask_budget": ask_budget}
 
 
 def _next_marked(state: PlannerState, after: Part | None) -> str:
@@ -89,6 +97,8 @@ def route(state: PlannerState) -> str:
     brief = (state.get("trip") or Trip()).get("brief") or Brief()
     if missing_fields(brief):
         return ASK_MISSING
+    if state.get("ask_budget"):
+        return ASK_BUDGET
     return _next_marked(state, None)
 
 

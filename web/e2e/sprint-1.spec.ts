@@ -33,7 +33,13 @@ type Outcome = 'chat' | 'denied' | 'correlation' | 'entra' | 'pending';
 type OptionGroupName = 'Flight options' | 'Hotel options';
 type PillName = 'Approve' | 'Reject';
 type CardSnapshot = { flights: string[]; hotels: string[]; activities: string[] };
-type BudgetReading = { total: number; limit: number; hotel: number; daily: number };
+type BudgetReading = {
+  total: number;
+  limit: number | null;
+  flight: number;
+  hotel: number;
+  daily: number;
+};
 
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -373,9 +379,11 @@ function amount(text: string, pattern: RegExp): number {
 
 async function readBudget(card: Locator): Promise<BudgetReading> {
   const text = await budgetRegion(card).innerText();
+  const limit = /of\s+\$([\d,]+\.\d{2})\s+budget/;
   return {
-    total: amount(text, /Total\s+\$([\d,]+\.\d{2})/),
-    limit: amount(text, /of\s+\$([\d,]+\.\d{2})\s+budget/),
+    total: amount(text, /total\s+\$([\d,]+\.\d{2})/i),
+    limit: limit.test(text) ? amount(text, limit) : null,
+    flight: amount(text, /Flight\s+\$([\d,]+\.\d{2})/),
     hotel: amount(text, /Hotel\s+\$([\d,]+\.\d{2})/),
     daily: amount(text, /Daily\s+\$([\d,]+\.\d{2})/),
   };
@@ -500,13 +508,14 @@ test.describe('sprint-1 Tokyo trip', () => {
       await expect(days.filter({ hasText: NO_FORECAST })).toHaveCount(0);
 
       const budget = budgetRegion(card);
-      await expect(budget).toContainText(/Total \$[\d,]+\.\d{2} of \$[\d,]+\.\d{2} budget/);
-      await expect(budget).toContainText('Flights are listed for booking and are not counted');
-      await expect(budget).not.toContainText(/Flights \$/);
+      await expect(budget).toContainText(/Estimated total \$[\d,]+\.\d{2}/);
+      await expect(budget).not.toContainText('not counted');
+      await expect(budget.getByRole('alert')).toHaveCount(0);
 
       const hotels = optionGroup(card, 'Hotel options');
       const before = await readBudget(card);
-      expect(before.total).toBeCloseTo(before.hotel + before.daily, 2);
+      expect(before.limit).toBeNull();
+      expect(before.total).toBeCloseTo(before.flight + before.hotel + before.daily, 2);
 
       const picked = await pickOther(hotels);
       expect(picked).not.toBe('');
@@ -514,7 +523,7 @@ test.describe('sprint-1 Tokyo trip', () => {
       const price = priceIn(await row.innerText());
       await expect.poll(async () => (await readBudget(card)).hotel).toBeCloseTo(price, 2);
       const after = await readBudget(card);
-      expect(after.total).toBeCloseTo(price + after.daily, 2);
+      expect(after.total).toBeCloseTo(after.flight + price + after.daily, 2);
       expect(after.daily).toBeCloseTo(before.daily, 2);
     },
   );
@@ -555,30 +564,32 @@ test.describe('sprint-1 Tokyo trip', () => {
   );
 
   test(
-    'E2E-14 budget level change only re-checks the budget',
+    'E2E-14 a budget change asks where the money goes, then re-plans only that part',
     {
       annotation: {
         type: 'covers',
-        description: 'Constraint: redo on change, budget level alone',
+        description: 'Constraint: a budget change asks where the money goes, then redoes that part',
       },
     },
     async () => {
       const original = await snapshot(latestCard(page));
       const cardsBefore = await planCards(page).count();
 
-      await sendAndSettle(page, 'Change only the budget level to high.');
+      await sendAndSettle(page, 'Raise the budget to $5000.');
+      await expect(replyText(page)).not.toHaveText(/^\s*$/);
+      await expect(planCards(page)).toHaveCount(cardsBefore);
+
+      await sendAndSettle(page, 'Put the extra money on the hotel.');
       await expect(planCards(page)).toHaveCount(cardsBefore + 1);
       await expect(statusChip(planCards(page).nth(cardsBefore - 1), 'Replaced')).toBeVisible();
 
       const replacement = latestCard(page);
       await expectOpenCard(replacement);
-      expect(await snapshot(replacement)).toEqual(original);
-      const days = itineraryDays(replacement);
-      const total = await days.count();
-      expect(total).toBeGreaterThan(0);
-      for (let index = 0; index < total; index += 1) {
-        await expect(days.nth(index)).toContainText('$180.00');
-      }
+      const changed = await snapshot(replacement);
+      expect(changed.flights).toEqual(original.flights);
+      expect(changed.activities).toEqual(original.activities);
+      expect(changed.hotels.length).toBeGreaterThan(0);
+      expect((await readBudget(replacement)).limit).toBeCloseTo(5000, 2);
     },
   );
 
@@ -866,9 +877,8 @@ test.describe('sprint-1 data layer', () => {
 
         const reading = await readBudget(card);
         expect(reading.limit).toBeCloseTo(600, 2);
-        expect(reading.total).toBeGreaterThan(reading.limit);
-        expect(reading.total).toBeCloseTo(reading.hotel + reading.daily, 2);
-        await expect(budget).toContainText('not counted');
+        expect(reading.total).toBeGreaterThan(reading.limit ?? Number.POSITIVE_INFINITY);
+        expect(reading.total).toBeCloseTo(reading.flight + reading.hotel + reading.daily, 2);
 
         const flights = optionGroup(card, 'Flight options');
         const hotels = optionGroup(card, 'Hotel options');

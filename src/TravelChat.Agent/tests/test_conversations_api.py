@@ -136,12 +136,15 @@ def classification(
     route: Literal["answer", "plan"] = "answer",
     verdict: Literal["travel", "weather", "off_topic"] = "weather",
     change: Literal["flights", "hotel"] | None = None,
+    budget_focus: Literal["none", "hotels", "flights", "places"] = "none",
     **details: Any,
 ) -> Turn:
     fields: dict[str, Any] = dict.fromkeys(DETAIL_FIELDS)
     fields.update(details)
     extraction = (
-        Extraction(brief=Details(**fields), change=change or "none") if route == "plan" else None
+        Extraction(brief=Details(**fields), change=change or "none", budget_focus=budget_focus)
+        if route == "plan"
+        else None
     )
     return Classification(verdict=verdict, route=route), extraction
 
@@ -162,7 +165,7 @@ class FakeProvider:
         keys = ("low", "medium", "answer", "weather", "places", "flights", "hotels")
         self.scripts = {key: [] for key in keys}
         self.scripts["low"].append(AIMessage(TITLE))
-        days = [itinerary_module.DayDraft(activities=["Tsukiji market", "Senso-ji"])] * 5
+        days = [itinerary_module.DayDraft(date="", activities=["Tsukiji market", "Senso-ji"])] * 5
         self.queues = {
             "Pills": [Pills(items=["Plan a trip", "Check flights"])],
             "ItineraryDraft": [itinerary_module.ItineraryDraft(days=days)],
@@ -665,10 +668,12 @@ def test_a_plan_turn_streams_the_card_and_the_detail_rebuilds_it_with_pills(
     assert [day["costUsd"] for day in card["days"]] == [90.0, 90.0, 90.0]
     assert card["days"][0]["weather"] == "12 to 20 °C, 30% chance of rain"
     assert card["budget"] == {
+        "flightUsd": 401.0,
+        "hotelUsd": 601.0,
         "dailyUsd": 270.0,
-        "totalUsd": 871.0,
-        "budgetUsd": 750.0,
-        "overBudget": True,
+        "totalUsd": 1272.0,
+        "budgetUsd": None,
+        "overBudget": False,
     }
     assert frames[-2][1] == {"items": CARD_PILLS}
     text = "".join(tokens_of(frames))

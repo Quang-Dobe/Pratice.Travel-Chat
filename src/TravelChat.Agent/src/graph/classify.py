@@ -35,9 +35,11 @@ weather or climate somewhere with no trip being planned; off_topic for anything 
 <route>
 plan when the latest message starts a trip plan, answers a question the planner asked in \
 <last_assistant_message> (such as the <missing_fields>), even in a few words, or changes the trip \
-itself: destination, origin, dates, length, travellers, budget, interests, or a different, \
-cheaper, or better flight or hotel. With a plan card on screen, such a change is still plan: the \
-planner rebuilds the card.
+itself: destination, origin, dates, length, travellers, budget (a new amount or level), \
+interests, or a different, cheaper, or better flight or hotel. With a plan card on screen, such a \
+change is still plan: the planner rebuilds the card. When <last_assistant_message> asks where the \
+budget should go, a reply that names a part of the trip (the hotel, the flights, things to do, or \
+places) is plan.
 answer for questions, suggestions, and recommendations such as food spots, attractions, things to \
 do, or tips, and for weather questions. Earlier planning turns do not make a question a planning \
 request.
@@ -46,11 +48,13 @@ request.
 <examples>
 Assistant asked "Which city are you leaving from?"; user: "Hanoi" -> plan
 Assistant asked when the trip starts; user: "next Friday, for a week" -> plan
+Assistant asked where the extra budget should go; user: "mostly the flights" -> plan
 "Change it to 4 days" -> plan
 "Swap to a nonstop flight" -> plan
 "Add one more traveller" -> plan
 "Go for a luxury budget instead" -> plan
 "Book a less expensive place to stay" -> plan
+"Increase my budget to 2500 dollars" -> plan
 "Where should we eat there?" -> answer
 "Is it rainy in May?" -> answer
 "What museums are worth seeing?" -> answer
@@ -112,6 +116,8 @@ async def run(state: PlannerState, deps: PlannerDeps) -> dict[str, Any]:
         "pills": [],
         "details": {},
         "change": None,
+        "focus": None,
+        "ask_budget": False,
     }
     if action is not None:
         return {**reset, "verdict": "travel", "route": "plan"}

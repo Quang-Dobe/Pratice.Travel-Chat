@@ -84,9 +84,11 @@ type PlanCardProps = {
 export function PlanCard({ card, picked, interactive, onPick }: PlanCardProps) {
   const { status, budget } = card;
   const open = status === 'open';
+  const flightUsd = priceOf(card.flights, picked.flightId);
   const hotelUsd = priceOf(card.hotels, picked.hotelId);
-  const totalUsd = open ? hotelUsd + budget.dailyUsd : budget.totalUsd;
-  const overBudget = open ? totalUsd > budget.budgetUsd : budget.overBudget;
+  const totalUsd = open ? flightUsd + hotelUsd + budget.dailyUsd : budget.totalUsd;
+  const limit = budget.budgetUsd;
+  const overBudget = open ? limit !== null && totalUsd > limit : budget.overBudget;
 
   return (
     <Paper
@@ -150,9 +152,14 @@ export function PlanCard({ card, picked, interactive, onPick }: PlanCardProps) {
         <Divider />
         <Box component="section" aria-label="Budget">
           <Typography variant="subtitle2" component="h4">
-            {`Total ${usd.format(totalUsd)} of ${usd.format(budget.budgetUsd)} budget`}
+            {limit === null
+              ? `Estimated total ${usd.format(totalUsd)}`
+              : `Total ${usd.format(totalUsd)} of ${usd.format(limit)} budget`}
           </Typography>
           <Stack direction="row" sx={{ gap: 2, flexWrap: 'wrap', mt: 0.5 }}>
+            <Typography variant="body2" component="span">
+              {`Flight ${usd.format(flightUsd)}`}
+            </Typography>
             <Typography variant="body2" component="span">
               {`Hotel ${usd.format(hotelUsd)}`}
             </Typography>
@@ -160,9 +167,6 @@ export function PlanCard({ card, picked, interactive, onPick }: PlanCardProps) {
               {`Daily ${usd.format(budget.dailyUsd)}`}
             </Typography>
           </Stack>
-          <Typography variant="caption" component="span" color="text.secondary">
-            Flights are listed for booking and are not counted in the total.
-          </Typography>
           {overBudget && (
             <Alert severity="warning" sx={{ mt: 1 }}>
               This plan is over budget.

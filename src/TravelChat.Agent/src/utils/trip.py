@@ -6,6 +6,7 @@ from typing import Any, Literal, TypedDict, cast
 type Level = Literal["low", "mid", "high"]
 type Part = Literal["flights", "hotels", "itinerary"]
 type Change = Literal["flights", "hotel"]
+type Focus = Literal["hotels", "flights", "places"]
 type ChangedField = Literal["destination", "dates", "travellers", "origin", "interests", "budget"]
 
 DEFAULT_TRAVELLERS = 1
@@ -17,7 +18,6 @@ FORECAST_RANGE_DAYS = 15
 NO_FORECAST = "no forecast available yet"
 
 DAILY_COST_USD: dict[str, int] = {"low": 40, "mid": 90, "high": 180}
-ALLOWANCE_USD: dict[str, int] = {"low": 100, "mid": 250, "high": 500}
 
 PART_ORDER: tuple[Part, ...] = ("flights", "hotels", "itinerary")
 _ALL_PARTS: frozenset[Part] = frozenset(PART_ORDER)
@@ -32,6 +32,11 @@ _REDO: dict[ChangedField, frozenset[Part]] = {
 _REDO_FOR_CHANGE: dict[Change, frozenset[Part]] = {
     "flights": frozenset({"flights", "itinerary"}),
     "hotel": frozenset({"hotels"}),
+}
+_REDO_FOR_FOCUS: dict[Focus, frozenset[Part]] = {
+    "hotels": frozenset({"hotels"}),
+    "flights": frozenset({"flights", "itinerary"}),
+    "places": frozenset({"itinerary"}),
 }
 
 
@@ -66,9 +71,11 @@ class Day(TypedDict):
 
 
 class Budget(TypedDict):
+    flightUsd: float
+    hotelUsd: float
     dailyUsd: float
     totalUsd: float
-    budgetUsd: float
+    budgetUsd: float | None
     overBudget: bool
 
 
@@ -93,6 +100,10 @@ def redo_for(changed: set[ChangedField], change: Change | None) -> list[Part]:
     if change is not None:
         parts |= _REDO_FOR_CHANGE[change]
     return [part for part in PART_ORDER if part in parts]
+
+
+def redo_for_focus(focus: Focus) -> list[Part]:
+    return [part for part in PART_ORDER if part in _REDO_FOR_FOCUS[focus]]
 
 
 def merge_parts(first: Sequence[Part], second: Sequence[Part]) -> list[Part]:
@@ -215,9 +226,6 @@ def apply_updates(
     if "travellers" not in brief:
         brief["travellers"] = DEFAULT_TRAVELLERS
         flagged.add("travellers")
-    if "budget_level" not in brief:
-        brief["budget_level"] = DEFAULT_LEVEL
-        flagged.add("budget_level")
     return brief, sorted(flagged)
 
 
@@ -283,20 +291,33 @@ def changed_fields(before: Brief, after: Brief) -> set[ChangedField]:
     return changed
 
 
+def budget_hint(brief: Brief) -> str:
+    parts: list[str] = []
+    if (amount := brief.get("budget_usd")) is not None:
+        parts.append(f"${amount:,.0f} in total")
+    if (level := brief.get("budget_level")) is not None:
+        parts.append(f"{level} level")
+    return f"The trip budget is {', '.join(parts)}." if parts else ""
+
+
 def daily_cost(brief: Brief) -> float:
     rate = DAILY_COST_USD[brief.get("budget_level", DEFAULT_LEVEL)]
     return float(rate * brief.get("travellers", DEFAULT_TRAVELLERS))
 
 
-def budget(brief: Brief, hotel_price: float, days: int) -> Budget:
-    level = brief.get("budget_level", DEFAULT_LEVEL)
-    travellers = brief.get("travellers", DEFAULT_TRAVELLERS)
-    daily = round(float(DAILY_COST_USD[level] * travellers * days), 2)
-    total = round(hotel_price + daily, 2)
+def budget(brief: Brief, hotel_price: float, flight_price: float, days: int) -> Budget:
+    daily = round(daily_cost(brief) * days, 2)
+    total = round(flight_price + hotel_price + daily, 2)
     stated = brief.get("budget_usd")
-    per_day = float(ALLOWANCE_USD[level] * travellers * days)
-    allowance = round(stated, 2) if stated is not None else per_day
-    return Budget(dailyUsd=daily, totalUsd=total, budgetUsd=allowance, overBudget=total > allowance)
+    allowance = round(stated, 2) if stated is not None else None
+    return Budget(
+        flightUsd=round(flight_price, 2),
+        hotelUsd=round(hotel_price, 2),
+        dailyUsd=daily,
+        totalUsd=total,
+        budgetUsd=allowance,
+        overBudget=allowance is not None and total > allowance,
+    )
 
 
 def prefer_new(options: Sequence[Option], seen_ids: Sequence[str]) -> list[Option]:

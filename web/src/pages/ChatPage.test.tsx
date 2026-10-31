@@ -114,7 +114,14 @@ function makeCard(overrides: Partial<PlanCard> = {}): PlanCard {
     ],
     picked: { flightId: 'f1', hotelId: 'h1' },
     days: [{ date: '2026-11-01', activities: ['Temple'], weather: '18C', costUsd: 90 }],
-    budget: { dailyUsd: 90, totalUsd: 390, budgetUsd: 1000, overBudget: false },
+    budget: {
+      flightUsd: 500,
+      hotelUsd: 300,
+      dailyUsd: 90,
+      totalUsd: 890,
+      budgetUsd: 2000,
+      overBudget: false,
+    },
     ...overrides,
   };
 }
@@ -160,7 +167,14 @@ describe('ChatPage plan card', () => {
                 makeCard({
                   status: 'approved',
                   picked: { flightId: 'f1', hotelId: 'h2' },
-                  budget: { dailyUsd: 90, totalUsd: 790, budgetUsd: 1000, overBudget: false },
+                  budget: {
+                    flightUsd: 500,
+                    hotelUsd: 700,
+                    dailyUsd: 90,
+                    totalUsd: 1290,
+                    budgetUsd: 2000,
+                    overBudget: false,
+                  },
                 }),
                 [],
               ),
@@ -185,7 +199,7 @@ describe('ChatPage plan card', () => {
     await waitFor(() => expect(within(card).getByText('Approved')).toBeInTheDocument());
     expect(within(card).getByRole('radio', { name: 'Hotel two' })).toBeChecked();
     expect(within(card).getByRole('radio', { name: 'Hotel two' })).toBeDisabled();
-    expect(within(card).getByText('Total $790.00 of $1,000.00 budget')).toBeInTheDocument();
+    expect(within(card).getByText('Total $1,290.00 of $2,000.00 budget')).toBeInTheDocument();
     expect(approvals).toEqual([]);
   });
 
@@ -269,7 +283,14 @@ describe('ChatPage plan card', () => {
         HttpResponse.json(
           withCard(
             makeCard({
-              budget: { dailyUsd: 90, totalUsd: 790, budgetUsd: 600, overBudget: true },
+              budget: {
+                flightUsd: 500,
+                hotelUsd: 700,
+                dailyUsd: 90,
+                totalUsd: 1290,
+                budgetUsd: 600,
+                overBudget: true,
+              },
               picked: { flightId: 'f1', hotelId: 'h2' },
               status: 'approved',
             }),
@@ -282,7 +303,7 @@ describe('ChatPage plan card', () => {
 
     const card = await screen.findByRole('group', { name: 'Plan card' });
     expect(within(card).getByRole('alert')).toHaveTextContent(/over budget/i);
-    expect(within(card).getByText('Total $790.00 of $600.00 budget')).toBeInTheDocument();
+    expect(within(card).getByText('Total $1,290.00 of $600.00 budget')).toBeInTheDocument();
   });
 
   it('renders a streamed plan card, then marks the earlier card replaced after done', async () => {

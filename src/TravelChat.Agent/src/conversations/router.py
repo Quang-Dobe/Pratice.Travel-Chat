@@ -106,9 +106,11 @@ class DayItem(ApiModel):
 
 
 class BudgetItem(ApiModel):
+    flight_usd: float = 0.0
+    hotel_usd: float = 0.0
     daily_usd: float
     total_usd: float
-    budget_usd: float
+    budget_usd: float | None
     over_budget: bool
 
 

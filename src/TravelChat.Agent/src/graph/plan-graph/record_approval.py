@@ -34,7 +34,9 @@ async def run(state: PlannerState, deps: PlannerDeps) -> dict[str, Any]:
         return {"note": refusal}
     latest["picked"] = Picked(flightId=action["flightId"], hotelId=action["hotelId"])
     hotel = next(option for option in latest["hotels"] if option["id"] == action["hotelId"])
+    flight = next(option for option in latest["flights"] if option["id"] == action["flightId"])
     brief = (state.get("trip") or Trip()).get("brief") or Brief()
-    latest["budget"] = budget(brief, hotel["priceUsd"], len(trip_dates(brief)))
+    days = len(trip_dates(brief))
+    latest["budget"] = budget(brief, hotel["priceUsd"], flight["priceUsd"], days)
     latest["status"] = "approved"
     return {"cards": cards, "note": None}

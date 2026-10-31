@@ -24,7 +24,14 @@ const baseCard: PlanCardData = {
     { date: '2026-11-01', activities: ['Temple'], weather: '18C, 10% rain', costUsd: 90 },
     { date: '2026-11-02', activities: ['Market'], weather: NO_FORECAST, costUsd: 90 },
   ],
-  budget: { dailyUsd: 180, totalUsd: 480, budgetUsd: 1000, overBudget: false },
+  budget: {
+    flightUsd: 500,
+    hotelUsd: 300,
+    dailyUsd: 180,
+    totalUsd: 980,
+    budgetUsd: 2000,
+    overBudget: false,
+  },
 };
 
 function Harness({
@@ -62,30 +69,32 @@ describe('PlanCard', () => {
     expect(within(hotels).getByRole('radio', { name: 'Hotel two' })).not.toBeChecked();
   });
 
-  it('recomputes the total from the picked hotel and never counts flights', async () => {
+  it('recomputes the total from the picked flight and hotel', async () => {
     const seen: Picked[] = [];
     render(<Harness onChange={(picked) => seen.push(picked)} />);
     const budget = screen.getByRole('region', { name: 'Budget' });
-    expect(within(budget).getByText('Total $480.00 of $1,000.00 budget')).toBeInTheDocument();
+    expect(within(budget).getByText('Total $980.00 of $2,000.00 budget')).toBeInTheDocument();
+    expect(within(budget).getByText('Flight $500.00')).toBeInTheDocument();
     expect(within(budget).getByText('Hotel $300.00')).toBeInTheDocument();
     expect(within(budget).getByText('Daily $180.00')).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole('radio', { name: 'Hotel two' }));
 
-    expect(within(budget).getByText('Total $880.00 of $1,000.00 budget')).toBeInTheDocument();
+    expect(within(budget).getByText('Total $1,380.00 of $2,000.00 budget')).toBeInTheDocument();
     expect(within(budget).getByText('Hotel $700.00')).toBeInTheDocument();
     expect(seen.at(-1)).toEqual({ flightId: 'f1', hotelId: 'h2' });
 
     await userEvent.click(screen.getByRole('radio', { name: 'Flight two' }));
 
-    expect(within(budget).getByText('Total $880.00 of $1,000.00 budget')).toBeInTheDocument();
-    expect(within(budget).getByText(/not counted/)).toBeInTheDocument();
+    expect(within(budget).getByText('Total $1,780.00 of $2,000.00 budget')).toBeInTheDocument();
+    expect(within(budget).getByText('Flight $900.00')).toBeInTheDocument();
+    expect(within(budget).queryByText(/not counted/)).not.toBeInTheDocument();
     expect(within(budget).queryByRole('alert')).not.toBeInTheDocument();
     expect(seen.at(-1)).toEqual({ flightId: 'f2', hotelId: 'h2' });
   });
 
   it('warns when the live total goes over the budget', async () => {
-    const card = { ...baseCard, budget: { ...baseCard.budget, budgetUsd: 600 } };
+    const card = { ...baseCard, budget: { ...baseCard.budget, budgetUsd: 1200 } };
     render(<Harness card={card} />);
     const budget = screen.getByRole('region', { name: 'Budget' });
     expect(within(budget).queryByRole('alert')).not.toBeInTheDocument();
@@ -93,6 +102,19 @@ describe('PlanCard', () => {
     await userEvent.click(screen.getByRole('radio', { name: 'Hotel two' }));
 
     expect(within(budget).getByRole('alert')).toHaveTextContent(/over budget/i);
+  });
+
+  it('shows an estimated total and never warns when the user set no budget', async () => {
+    const card = { ...baseCard, budget: { ...baseCard.budget, budgetUsd: null } };
+    render(<Harness card={card} />);
+    const budget = screen.getByRole('region', { name: 'Budget' });
+    expect(within(budget).getByText('Estimated total $980.00')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('radio', { name: 'Flight two' }));
+    await userEvent.click(screen.getByRole('radio', { name: 'Hotel two' }));
+
+    expect(within(budget).getByText('Estimated total $1,780.00')).toBeInTheDocument();
+    expect(within(budget).queryByRole('alert')).not.toBeInTheDocument();
   });
 
   it('shows each day with activities, weather and cost', () => {
@@ -139,7 +161,14 @@ describe('PlanCard', () => {
       ...baseCard,
       status: 'approved',
       picked: { flightId: 'f2', hotelId: 'h2' },
-      budget: { dailyUsd: 180, totalUsd: 880, budgetUsd: 600, overBudget: true },
+      budget: {
+        flightUsd: 900,
+        hotelUsd: 700,
+        dailyUsd: 180,
+        totalUsd: 1780,
+        budgetUsd: 600,
+        overBudget: true,
+      },
     };
     render(
       <PlanCard card={card} picked={card.picked} interactive={false} onPick={() => undefined} />,
@@ -148,7 +177,7 @@ describe('PlanCard', () => {
     expect(screen.getByText('Approved')).toBeInTheDocument();
     expect(screen.getByRole('radio', { name: 'Hotel two' })).toBeChecked();
     expect(screen.getByRole('radio', { name: 'Hotel two' })).toBeDisabled();
-    expect(screen.getByText('Total $880.00 of $600.00 budget')).toBeInTheDocument();
+    expect(screen.getByText('Total $1,780.00 of $600.00 budget')).toBeInTheDocument();
     expect(screen.getByRole('alert')).toHaveTextContent(/over budget/i);
   });
 });

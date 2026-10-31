@@ -146,12 +146,15 @@ def classification(
     route: Literal["answer", "plan"] = "answer",
     verdict: Literal["travel", "weather", "off_topic"] = "travel",
     change: Literal["flights", "hotel"] | None = None,
+    budget_focus: Literal["none", "hotels", "flights", "places"] = "none",
     **details: Any,
 ) -> Turn:
     fields: dict[str, Any] = dict.fromkeys(DETAIL_FIELDS)
     fields.update(details)
     extraction = (
-        Extraction(brief=Details(**fields), change=change or "none") if route == "plan" else None
+        Extraction(brief=Details(**fields), change=change or "none", budget_focus=budget_focus)
+        if route == "plan"
+        else None
     )
     return Classification(verdict=verdict, route=route), extraction
 
@@ -562,7 +565,9 @@ def extract_state(text: str) -> PlannerState:
 async def extract(chat: Chat, text: str, **brief: Any) -> dict[str, Any]:
     fields: dict[str, Any] = dict.fromkeys(DETAIL_FIELDS)
     fields.update(brief)
-    chat.provider.queues["Extraction"] = [Extraction(change="none", brief=Details(**fields))]
+    chat.provider.queues["Extraction"] = [
+        Extraction(change="none", budget_focus="none", brief=Details(**fields))
+    ]
     update: dict[str, Any] = await extract_module.run(extract_state(text), chat.deps)
     return update
 
@@ -570,7 +575,9 @@ async def extract(chat: Chat, text: str, **brief: Any) -> dict[str, Any]:
 async def test_a_hotel_change_from_the_model_reaches_the_update() -> None:
     chat = Chat()
     fields: dict[str, Any] = {**dict.fromkeys(DETAIL_FIELDS), **COPIED}
-    chat.provider.queues["Extraction"] = [Extraction(change="hotel", brief=Details(**fields))]
+    chat.provider.queues["Extraction"] = [
+        Extraction(change="hotel", budget_focus="none", brief=Details(**fields))
+    ]
 
     update = await extract_module.run(extract_state("find a cheaper hotel"), chat.deps)
 
@@ -583,7 +590,7 @@ async def test_a_copied_brief_changes_nothing_even_when_reworded() -> None:
 
     update = await extract(chat, "what about hotels?", **copied, hotel_criteria="cheaper")
 
-    assert update == {"details": {"hotel_criteria": "cheaper"}, "change": None}
+    assert update == {"details": {"hotel_criteria": "cheaper"}, "change": None, "focus": None}
     assert chat.provider.structured_calls == ["Extraction"]
 
 

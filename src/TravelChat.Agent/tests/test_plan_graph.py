@@ -177,12 +177,15 @@ def classification(
     route: Literal["answer", "plan"] = "plan",
     verdict: Literal["travel", "weather", "off_topic"] = "travel",
     change: Literal["flights", "hotel"] | None = None,
+    budget_focus: Literal["none", "hotels", "flights", "places"] = "none",
     **details: Any,
 ) -> Turn:
     fields: dict[str, Any] = dict.fromkeys(DETAIL_FIELDS)
     fields.update(details)
     extraction = (
-        Extraction(brief=Details(**fields), change=change or "none") if route == "plan" else None
+        Extraction(brief=Details(**fields), change=change or "none", budget_focus=budget_focus)
+        if route == "plan"
+        else None
     )
     return Classification(verdict=verdict, route=route), extraction
 
@@ -227,7 +230,9 @@ class Scenario:
         self.config = thread_config(uuid4(), uuid4())
         self.provider.scripts["low"].append(AIMessage("Tokyo trip"))
         self.provider.queues["Pills"] = [Pills(items=["Cheaper hotel", "Add places"])]
-        days = [itinerary_module.DayDraft(activities=["Tsukiji market", "Hike Mt. Takao"])] * DAYS
+        days = [
+            itinerary_module.DayDraft(date="", activities=["Tsukiji market", "Hike Mt. Takao"])
+        ] * DAYS
         self.provider.queues["ItineraryDraft"] = [itinerary_module.ItineraryDraft(days=days)]
 
     def _tool(self, name: str, function: Callable[..., Any]) -> BaseTool:
@@ -386,9 +391,11 @@ async def test_answering_the_origin_runs_every_part_in_order_and_shows_one_card(
     assert card["days"][0]["activities"] == ["Tsukiji market", "Hike Mt. Takao"]
     assert {day["costUsd"] for day in card["days"]} == {90.0}
     assert card["budget"] == {
+        "flightUsd": 450.0,
+        "hotelUsd": 600.0,
         "dailyUsd": 450.0,
-        "totalUsd": 1050.0,
-        "budgetUsd": 1250.0,
+        "totalUsd": 1500.0,
+        "budgetUsd": None,
         "overBudget": False,
     }
     [shown] = of_kind(events, "plan_card")
@@ -420,7 +427,7 @@ async def test_the_card_turn_ends_with_approve_reject_and_one_or_two_change_pill
 
 async def test_approve_records_the_picks_and_confirms_with_both_links() -> None:
     scenario = Scenario()
-    await scenario.full_demo(budget_usd=1100)
+    await scenario.full_demo(budget_usd=1600)
     card = (await scenario.values())["cards"][0]
     assert card["budget"]["overBudget"] is False
 
@@ -431,9 +438,11 @@ async def test_approve_records_the_picks_and_confirms_with_both_links() -> None:
     assert approved["status"] == "approved"
     assert approved["picked"] == {"flightId": "f2", "hotelId": "h3"}
     assert approved["budget"] == {
+        "flightUsd": 520.0,
+        "hotelUsd": 800.0,
         "dailyUsd": 450.0,
-        "totalUsd": 1250.0,
-        "budgetUsd": 1100.0,
+        "totalUsd": 1770.0,
+        "budgetUsd": 1600.0,
         "overBudget": True,
     }
     text = values["messages"][-1].text
@@ -576,7 +585,7 @@ EVERYTHING = {"flights": 2, "hotels": 2, "weather": 2, "places": 2}
 FLIGHTS_ONLY = {"flights": 2, "hotels": 1, "weather": 1, "places": 1}
 ITINERARY_ONLY = {"flights": 1, "hotels": 1, "weather": 2, "places": 2}
 FLIGHTS_AND_ITINERARY = {"flights": 2, "hotels": 1, "weather": 2, "places": 2}
-NOTHING = {"flights": 1, "hotels": 1, "weather": 1, "places": 1}
+HOTELS_ONLY = {"flights": 1, "hotels": 2, "weather": 1, "places": 1}
 
 
 @pytest.mark.parametrize(
@@ -587,7 +596,9 @@ NOTHING = {"flights": 1, "hotels": 1, "weather": 1, "places": 1}
         ({"travellers": 2}, DAYS, EVERYTHING),
         ({"origin": "Hanoi"}, DAYS, FLIGHTS_ONLY),
         ({"interests": ["museums"]}, DAYS, ITINERARY_ONLY),
-        ({"budget_level": "high"}, DAYS, NOTHING),
+        ({"budget_usd": 3000, "budget_focus": "hotels"}, DAYS, HOTELS_ONLY),
+        ({"budget_usd": 3000, "budget_focus": "places"}, DAYS, ITINERARY_ONLY),
+        ({"budget_usd": 3000, "budget_focus": "flights"}, DAYS, FLIGHTS_AND_ITINERARY),
         ({"flight_criteria": "nonstop"}, DAYS, FLIGHTS_AND_ITINERARY),
         ({"flight_criteria": "nonstop", "hotel_criteria": "cheaper"}, DAYS, EVERYTHING),
     ],
@@ -641,7 +652,7 @@ async def test_a_requested_hotel_change_does_not_hide_a_flight_criteria_change()
     assert scenario.calls.count("weather__forecast") == 2
 
 
-async def test_a_budget_only_message_with_copied_criteria_keeps_the_hotels() -> None:
+async def test_a_budget_only_message_with_copied_criteria_asks_and_keeps_the_hotels() -> None:
     scenario = Scenario()
     await scenario.full_demo()
     scenario.classify(classification(change="hotel", hotel_criteria="cheaper"))
@@ -649,14 +660,15 @@ async def test_a_budget_only_message_with_copied_criteria_keeps_the_hotels() -> 
     await scenario.say("A cheaper hotel, please.")
     assert scenario.calls.count("hotels__search") == 2
     scenario.classify(classification(hotel_criteria="Cheaper ", budget_level="high"))
+    scenario.provider.scripts["medium"].append(AIMessage("Where should the money go?"))
 
     await scenario.say("Change only the budget level to high.")
 
     values = await scenario.values()
     assert scenario.calls.count("hotels__search") == 2
     assert scenario.calls.count("flights__search") == 1
-    assert len(values["cards"]) == 3
-    assert values["cards"][2]["budget"]["dailyUsd"] == 900.0
+    assert len(values["cards"]) == 2
+    assert values["messages"][-1].text == "Where should the money go?"
 
 
 async def test_a_nonstop_flights_message_re_searches_the_flights() -> None:
@@ -672,21 +684,57 @@ async def test_a_nonstop_flights_message_re_searches_the_flights() -> None:
     assert scenario.calls.count("hotels__search") == 1
 
 
-async def test_a_budget_level_change_keeps_the_options_and_moves_the_daily_costs() -> None:
+async def test_a_budget_change_without_a_focus_asks_where_the_money_goes() -> None:
     scenario = Scenario()
     await scenario.full_demo()
-    first = (await scenario.values())["cards"][0]
-    scenario.classify(classification(budget_level="high"))
+    searches = len(scenario.calls)
+    scenario.classify(classification(budget_usd=3000))
+    scenario.provider.scripts["medium"].append(AIMessage("Where should the extra money go?"))
 
-    await scenario.say("make it high budget")
+    events = await scenario.say("raise the budget to $3000")
 
-    second = (await scenario.values())["cards"][1]
-    assert second["flights"] == first["flights"]
-    assert second["hotels"] == first["hotels"]
-    assert [d["activities"] for d in second["days"]] == [d["activities"] for d in first["days"]]
-    assert {day["costUsd"] for day in second["days"]} == {180.0}
-    assert second["budget"]["dailyUsd"] == 900.0
-    assert second["budget"]["budgetUsd"] == 2500.0
+    values = await scenario.values()
+    assert len(scenario.calls) == searches
+    assert [card["status"] for card in values["cards"]] == ["open"]
+    assert values["trip"]["brief"]["budget_usd"] == 3000
+    assert values["messages"][-1].text == "Where should the extra money go?"
+    assert of_kind(events, "plan_card") == []
+
+
+async def test_naming_the_focus_after_the_question_re_plans_that_part_with_the_budget() -> None:
+    scenario = Scenario()
+    await scenario.full_demo()
+    scenario.classify(classification(budget_usd=3000))
+    scenario.provider.scripts["medium"].append(AIMessage("Where should the extra money go?"))
+    await scenario.say("raise the budget to $3000")
+    scenario.classify(classification(budget_focus="hotels"))
+    scenario.script_hotels()
+
+    await scenario.say("the hotel")
+
+    values = await scenario.values()
+    assert scenario.calls.count("hotels__search") == 2
+    assert scenario.calls.count("flights__search") == 1
+    assert [card["status"] for card in values["cards"]] == ["replaced", "open"]
+    assert values["cards"][1]["budget"]["budgetUsd"] == 3000
+    requests = [
+        message.text
+        for seen in scenario.provider.seen
+        for message in seen
+        if isinstance(message, HumanMessage) and "Search hotels" in message.text
+    ]
+    assert "The trip budget is $3,000 in total." in requests[-1]
+    assert "The user wants the hotel to reflect this budget." in requests[-1]
+
+
+async def test_a_budget_level_keeps_the_options_moves_the_daily_costs_and_sets_no_amount() -> None:
+    scenario = Scenario()
+    await scenario.full_demo(budget_level="high")
+
+    [card] = (await scenario.values())["cards"]
+    assert {day["costUsd"] for day in card["days"]} == {180.0}
+    assert card["budget"]["dailyUsd"] == 900.0
+    assert card["budget"]["budgetUsd"] is None
 
 
 async def test_over_budget_warns_with_the_breakdown_and_swaps_nothing() -> None:
@@ -700,10 +748,12 @@ async def test_over_budget_warns_with_the_breakdown_and_swaps_nothing() -> None:
     assert card["budget"]["overBudget"] is True
     assert card["budget"]["budgetUsd"] == 600
     assert card["picked"] == {"flightId": "f1", "hotelId": "h1"}
-    breakdown = "$600.00 hotel + $450.00 daily costs = $1,050.00 total against a budget of $600.00"
+    breakdown = (
+        "$450.00 flight + $600.00 hotel + $450.00 daily costs = $1,500.00 total "
+        "against a budget of $600.00"
+    )
     assert "Warning: this is over budget" in text
     assert breakdown in text
-    assert "Flights are not counted" in text
     assert "Nothing was changed" in text
 
 
@@ -742,3 +792,29 @@ async def test_a_missing_hotel_key_leaves_hotels_empty_with_a_notice_and_no_appr
     assert {"event": "notice", "message": message} in events
     assert "I could not find hotel options right now." in values["messages"][-1].text
     assert [pill["action"] for pill in of_kind(events, "pills")[0]["items"]] == [None, None]
+
+
+def test_build_days_places_each_draft_on_its_date_and_leaves_a_missing_date_empty() -> None:
+    draft = itinerary_module.ItineraryDraft(
+        days=[
+            itinerary_module.DayDraft(date="2026-11-03", activities=["Market"]),
+            itinerary_module.DayDraft(date="2026-11-01", activities=["Temple", " "]),
+        ]
+    )
+
+    days = itinerary_module.build_days(["2026-11-01", "2026-11-02", "2026-11-03"], draft, 90.0)
+
+    assert [day["activities"] for day in days] == [["Temple"], [], ["Market"]]
+
+
+def test_build_days_falls_back_to_the_order_when_a_draft_has_no_known_date() -> None:
+    draft = itinerary_module.ItineraryDraft(
+        days=[
+            itinerary_module.DayDraft(date="2026-11-02", activities=["Hike"]),
+            itinerary_module.DayDraft(date="day one", activities=["Temple"]),
+        ]
+    )
+
+    days = itinerary_module.build_days(["2026-11-01", "2026-11-02"], draft, 90.0)
+
+    assert [day["activities"] for day in days] == [["Temple"], ["Hike"]]

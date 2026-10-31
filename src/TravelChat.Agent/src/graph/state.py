@@ -34,6 +34,8 @@ class PlannerState(MessagesState):
     route: str
     details: dict[str, Any]
     change: str | None
+    focus: str | None
+    ask_budget: bool
     action: dict[str, Any] | None
     titled: bool
     trip: Trip

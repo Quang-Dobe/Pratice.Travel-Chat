@@ -80,9 +80,11 @@ export const PlanDay = z.object({
 export type PlanDay = z.infer<typeof PlanDay>;
 
 export const PlanBudget = z.object({
+  flightUsd: z.number().default(0),
+  hotelUsd: z.number().default(0),
   dailyUsd: z.number(),
   totalUsd: z.number(),
-  budgetUsd: z.number(),
+  budgetUsd: z.number().nullable(),
   overBudget: z.boolean(),
 });
 export type PlanBudget = z.infer<typeof PlanBudget>;

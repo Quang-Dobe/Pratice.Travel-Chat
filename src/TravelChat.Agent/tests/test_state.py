@@ -5,13 +5,13 @@ import pytest
 
 from src.utils.messages import parse_options, tool_text
 from src.utils.trip import (
-    ALLOWANCE_USD,
     DAILY_COST_USD,
     NO_FORECAST,
     Brief,
     Change,
     ChangedField,
     Day,
+    Focus,
     Option,
     Part,
     apply_updates,
@@ -24,6 +24,7 @@ from src.utils.trip import (
     missing_fields,
     prefer_new,
     redo_for,
+    redo_for_focus,
     trip_dates,
     within_forecast_range,
 )
@@ -98,58 +99,68 @@ def test_missing_fields_lists_what_the_brief_still_needs() -> None:
 
 def test_daily_cost_table_is_per_traveller_per_day() -> None:
     assert DAILY_COST_USD == {"low": 40, "mid": 90, "high": 180}
-    assert ALLOWANCE_USD == {"low": 100, "mid": 250, "high": 500}
     brief = complete_brief()
     brief["travellers"] = 3
     brief["budget_level"] = "high"
     assert daily_cost(brief) == 540
 
 
-def test_level_budget_is_hotel_plus_table_daily_against_the_allowance() -> None:
+def test_without_a_typed_amount_the_total_counts_flight_hotel_and_daily_with_no_budget() -> None:
     brief = complete_brief()
     brief["travellers"] = 2
 
-    result = budget(brief, hotel_price=600, days=5)
+    result = budget(brief, hotel_price=600, flight_price=300, days=5)
 
     assert result == {
+        "flightUsd": 300.0,
+        "hotelUsd": 600.0,
         "dailyUsd": 900.0,
-        "totalUsd": 1500.0,
-        "budgetUsd": 2500.0,
+        "totalUsd": 1800.0,
+        "budgetUsd": None,
         "overBudget": False,
     }
 
 
-def test_over_the_level_allowance_is_flagged() -> None:
+def test_a_level_alone_sets_no_budget_amount() -> None:
     brief = complete_brief()
     brief["budget_level"] = "low"
 
-    result = budget(brief, hotel_price=300, days=2)
+    result = budget(brief, hotel_price=300, flight_price=0, days=2)
 
     assert result["dailyUsd"] == 80
-    assert result["totalUsd"] == 380
-    assert result["budgetUsd"] == 200
-    assert result["overBudget"] is True
+    assert result["budgetUsd"] is None
+    assert result["overBudget"] is False
 
 
-@pytest.mark.parametrize(("stated", "over"), [(800, True), (850, False), (5000, False)])
-def test_a_typed_amount_replaces_the_allowance_and_keeps_the_stated_level(
-    stated: float, over: bool
-) -> None:
+@pytest.mark.parametrize(("stated", "over"), [(900, True), (950, False), (5000, False)])
+def test_a_typed_amount_is_the_budget_and_the_flight_counts(stated: float, over: bool) -> None:
     brief = complete_brief()
     brief["budget_usd"] = stated
 
-    result = budget(brief, hotel_price=400, days=5)
+    result = budget(brief, hotel_price=400, flight_price=100, days=5)
 
     assert result["dailyUsd"] == 450
-    assert result["totalUsd"] == 850
+    assert result["totalUsd"] == 950
     assert result["budgetUsd"] == stated
     assert result["overBudget"] is over
 
 
-def test_a_typed_amount_without_a_level_uses_mid() -> None:
+def test_a_typed_amount_without_a_level_uses_mid_for_daily_costs() -> None:
     brief = Brief(travellers=1, budget_usd=300)
 
-    assert budget(brief, hotel_price=0, days=2)["dailyUsd"] == 180
+    assert budget(brief, hotel_price=0, flight_price=0, days=2)["dailyUsd"] == 180
+
+
+@pytest.mark.parametrize(
+    ("focus", "parts"),
+    [
+        ("hotels", ["hotels"]),
+        ("flights", ["flights", "itinerary"]),
+        ("places", ["itinerary"]),
+    ],
+)
+def test_a_budget_focus_re_plans_only_that_part(focus: Focus, parts: list[str]) -> None:
+    assert redo_for_focus(focus) == parts
 
 
 def test_prefer_new_puts_unseen_options_first_cheapest_first() -> None:
@@ -203,11 +214,18 @@ def test_a_length_without_dates_starts_in_two_weeks_and_flags_the_defaults() -> 
     assert assumed == ["start_date", "travellers"]
 
 
+def test_no_budget_level_is_assumed_when_the_user_gives_none() -> None:
+    brief, assumed = apply_updates(Brief(), [], {"destination": "Tokyo", "length_days": 5}, TODAY)
+
+    assert "budget_level" not in brief
+    assert "budget_level" not in assumed
+
+
 def test_explicit_values_clear_their_assumed_flag() -> None:
     brief, assumed = apply_updates(
         Brief(), [], {"destination": "Rome", "length_days": 3, "origin": "Oslo"}, TODAY
     )
-    assert assumed == ["budget_level", "start_date", "travellers"]
+    assert assumed == ["start_date", "travellers"]
 
     brief, assumed = apply_updates(
         brief, assumed, {"start_date": "2026-12-01", "travellers": 3, "budget_level": "low"}, TODAY
