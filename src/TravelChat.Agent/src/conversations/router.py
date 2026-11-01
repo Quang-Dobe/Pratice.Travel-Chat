@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
 STREAM_MODES: list[StreamMode] = ["messages", "custom"]
-TOKEN_NODES = frozenset({"answer", "ask_missing", "ask_change"})
+TOKEN_NODES = frozenset({"answer", "ask_missing", "ask_change", "ask_budget"})
 PARAGRAPH_BREAK = "\n\n"
 FORWARDED_EVENTS = frozenset({"tool_call", "plan_card", "pills", "notice"})
 NOT_CONFIGURED = "The AI model is not configured."

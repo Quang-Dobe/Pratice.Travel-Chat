@@ -737,6 +737,21 @@ def test_reject_needs_no_ids_and_asks_what_to_change(
     ]
 
 
+def test_a_budget_change_streams_the_question_about_where_the_money_goes(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    script_demo()
+    conversation_id = create(client, user_a, "3 days in Tokyo from Singapore")["id"]
+    send(client, user_a, conversation_id, "3 days in Tokyo from Singapore")
+    queue_turns(PROVIDER.queues, classification(route="plan", budget_usd=3000))
+    PROVIDER.scripts["medium"].append(AIMessage("Where should the extra money go?"))
+
+    frames = parse_frames(send(client, user_a, conversation_id, "Raise the budget to $3000"))
+
+    assert "".join(tokens_of(frames)) == "Where should the extra money go?"
+    assert "plan_card" not in events_of(frames)
+
+
 def test_an_approve_with_no_plan_gets_the_note_and_no_card(
     client: TestClient, user_a: dict[str, str]
 ) -> None:
