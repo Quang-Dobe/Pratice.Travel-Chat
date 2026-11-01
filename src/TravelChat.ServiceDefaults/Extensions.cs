@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.IdentityModel.Tokens;
 using OpenTelemetry;
 using OpenTelemetry.Metrics;
@@ -17,12 +18,10 @@ namespace TravelChat.ServiceDefaults;
 
 public static class Extensions
 {
-    private const string InternalIssuer = "q-gateway";
-    private const string InternalAudience = "q-internal";
-
     public static TBuilder AddServiceDefaults<TBuilder>(this TBuilder builder)
         where TBuilder : IHostApplicationBuilder
     {
+        builder.Logging.ClearProviders();
         builder.Services.AddSerilog(
             (_, logger) => logger
                 .ReadFrom.Configuration(builder.Configuration)
@@ -67,9 +66,9 @@ public static class Extensions
                 options.TokenValidationParameters = new TokenValidationParameters
                 {
                     ValidateIssuer = true,
-                    ValidIssuer = InternalIssuer,
+                    ValidIssuer = InternalToken.Issuer,
                     ValidateAudience = true,
-                    ValidAudience = InternalAudience,
+                    ValidAudience = InternalToken.Audience,
                     ValidAlgorithms = ["RS256"],
                     ValidateIssuerSigningKey = true,
                     ValidateLifetime = true,

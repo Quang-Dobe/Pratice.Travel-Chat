@@ -29,7 +29,7 @@ builder.Services.PostConfigure<CookieAuthenticationOptions>(
         options.Cookie.SameSite = SameSiteMode.Lax;
         options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
     });
-builder.Services.AddInviteCheck();
+builder.Services.AddInviteCheck(builder.Configuration);
 builder.Services.AddApiAuthStatusCodes();
 builder.Services.AddAuthorizationBuilder()
     .SetFallbackPolicy(new AuthorizationPolicyBuilder().RequireAuthenticatedUser().Build())

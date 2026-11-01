@@ -38,7 +38,7 @@ public sealed class InviteCheckTests(GatewayFactory factory) : IClassFixture<Gat
         using var issuer = new TokenIssuer(Options.Create(new InternalTokenOptions()));
         using var httpClient = new HttpClient(stub, disposeHandler: false)
         {
-            BaseAddress = InviteCheck.UserServiceAddress,
+            BaseAddress = new Uri("http://q-user:8080"),
         };
         var check = new InviteCheck(httpClient, issuer, NullLogger<InviteCheck>.Instance);
 

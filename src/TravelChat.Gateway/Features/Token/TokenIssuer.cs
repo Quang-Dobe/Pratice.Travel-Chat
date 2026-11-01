@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
+using TravelChat.ServiceDefaults;
 
 namespace TravelChat.Gateway.Features.Token;
 
@@ -10,9 +11,9 @@ public sealed class InternalTokenOptions
 {
     public const string SectionName = "InternalToken";
 
-    public string Issuer { get; set; } = "q-gateway";
+    public string Issuer { get; set; } = InternalToken.Issuer;
 
-    public string Audience { get; set; } = "q-internal";
+    public string Audience { get; set; } = InternalToken.Audience;
 
     public TimeSpan Lifetime { get; set; } = TimeSpan.FromMinutes(5);
 

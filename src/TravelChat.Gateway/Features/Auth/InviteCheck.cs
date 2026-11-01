@@ -20,8 +20,6 @@ public sealed partial class InviteCheck
 
     private const string MappedOidClaim = "http://schemas.microsoft.com/identity/claims/objectidentifier";
 
-    public static readonly Uri UserServiceAddress = new("http://q-user:8080");
-
     private static readonly Uri MePath = new("/users/me", UriKind.Relative);
 
     private readonly HttpClient _http;
@@ -99,11 +97,18 @@ public sealed partial class InviteCheck
 
 public static class InviteCheckRegistration
 {
-    public static IServiceCollection AddInviteCheck(this IServiceCollection services)
+    private const string UserServiceKey = "ReverseProxy:Clusters:q-user:Destinations:primary:Address";
+
+    public static Uri UserServiceAddress(IConfiguration configuration) =>
+        new(configuration[UserServiceKey]
+            ?? throw new InvalidOperationException($"{UserServiceKey} is not configured."));
+
+    public static IServiceCollection AddInviteCheck(this IServiceCollection services, IConfiguration configuration)
     {
+        var address = UserServiceAddress(configuration);
         services.AddHttpClient<InviteCheck>(client =>
         {
-            client.BaseAddress = InviteCheck.UserServiceAddress;
+            client.BaseAddress = address;
             client.Timeout = TimeSpan.FromSeconds(3);
         });
 
