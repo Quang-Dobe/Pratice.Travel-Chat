@@ -17,6 +17,29 @@ public sealed class FlightsService(IHttpClientFactory httpClients, CachedFetch c
 
     private static readonly string[] s_resultGroups = ["best_flights", "other_flights"];
 
+    // Google Flights finds nothing for IATA city codes, so each is sent as its airports.
+    private static readonly Dictionary<string, string> s_cityAirports = new(StringComparer.Ordinal)
+    {
+        ["TYO"] = "HND,NRT",
+        ["OSA"] = "KIX,ITM",
+        ["SEL"] = "ICN,GMP",
+        ["BJS"] = "PEK,PKX",
+        ["JKT"] = "CGK,HLP",
+        ["LON"] = "LHR,LGW,STN,LTN,LCY,SEN",
+        ["PAR"] = "CDG,ORY",
+        ["MIL"] = "MXP,LIN,BGY",
+        ["ROM"] = "FCO,CIA",
+        ["MOW"] = "SVO,DME,VKO",
+        ["STO"] = "ARN,BMA",
+        ["NYC"] = "JFK,EWR,LGA",
+        ["CHI"] = "ORD,MDW",
+        ["WAS"] = "IAD,DCA,BWI",
+        ["YTO"] = "YYZ,YTZ",
+        ["SAO"] = "GRU,CGH,VCP",
+        ["RIO"] = "GIG,SDU",
+        ["BUE"] = "EZE,AEP",
+    };
+
     public async Task<ProviderResult<IReadOnlyList<FlightOption>>> SearchAsync(
         string origin,
         string destination,
@@ -25,8 +48,8 @@ public sealed class FlightsService(IHttpClientFactory httpClients, CachedFetch c
         int travellers,
         CancellationToken ct)
     {
-        var originCode = origin.Trim().ToUpperInvariant();
-        var destinationCode = destination.Trim().ToUpperInvariant();
+        var originCode = Airports(origin);
+        var destinationCode = Airports(destination);
         var query = string.Join(
             '|',
             originCode,
@@ -42,6 +65,12 @@ public sealed class FlightsService(IHttpClientFactory httpClients, CachedFetch c
             (apiKey, token) => FetchAsync(originCode, destinationCode, departDate, returnDate, travellers, apiKey, token),
             ct,
             requiresKey: true);
+    }
+
+    private static string Airports(string code)
+    {
+        var upper = code.Trim().ToUpperInvariant();
+        return s_cityAirports.GetValueOrDefault(upper, upper);
     }
 
     internal static IReadOnlyList<FlightOption> MapOptions(string body)

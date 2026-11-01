@@ -80,6 +80,24 @@ public sealed class FlightsServiceTests
         query.ShouldContain("adults=2");
     }
 
+    [Theory]
+    [InlineData("tyo", "HND%2CNRT")]
+    [InlineData("LON", "LHR%2CLGW%2CSTN%2CLTN%2CLCY%2CSEN")]
+    [InlineData("hnd", "HND")]
+    public async Task CityCodeIsSentAsItsAirports(string destination, string expected)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var rig = new CacheRig(s_withKey);
+        var handler = new StubHandler(_ => StubHandler.Json(Body));
+        var service = new FlightsService(new StubHttpClientFactory(handler), rig.Fetch);
+
+        await service.SearchAsync("nyc", destination, s_depart, s_return, 1, ct);
+
+        var query = handler.Requests.Single().Query;
+        query.ShouldContain("departure_id=JFK%2CEWR%2CLGA");
+        query.ShouldContain($"arrival_id={expected}&");
+    }
+
     [Fact]
     public async Task NonHttpsLinkDropsEveryOption()
     {
