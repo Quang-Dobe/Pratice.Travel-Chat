@@ -53,6 +53,7 @@ services:
       AzureAd__TenantId: ${AzureAd__TenantId:-}
       AzureAd__ClientId: ${AzureAd__ClientId:-}
       AzureAd__ClientSecret: ${AzureAd__ClientSecret:-}
+      Maps__ApiKey: ${GEOAPIFY_API_KEY:-}
     depends_on:
       q-user:
         condition: service_healthy
@@ -142,8 +143,6 @@ services:
     build:
       context: .
       dockerfile: web/Dockerfile
-    environment:
-      GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY:-}
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:80/"]
       interval: 5s

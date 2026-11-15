@@ -265,7 +265,7 @@ async function settled(page: Page): Promise<void> {
 async function sendAndSettle(page: Page, text: string): Promise<void> {
   const before = await assistantBubbles(page).count();
   await messageBox(page).fill(text);
-  await page.getByRole('button', { name: 'Send' }).click();
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
   await expect(assistantBubbles(page)).toHaveCount(before + 1);
   await settled(page);
 }

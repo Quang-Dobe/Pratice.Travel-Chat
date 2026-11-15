@@ -1,6 +1,6 @@
 import { HttpResponse, http } from 'msw';
 import { setupServer } from 'msw/node';
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
   ApiError,
   getConversation,
@@ -341,39 +341,6 @@ describe('parseSseFrames', () => {
   it('rejects malformed data', () => {
     expect(() => parseSseFrames('event: token\ndata: not-json\n\n')).toThrow();
     expect(() => parseSseFrames('event: token\ndata: {"text":1}\n\n')).toThrow();
-  });
-});
-
-describe('getConfig', () => {
-  async function freshGetConfig() {
-    vi.resetModules();
-    return (await import('./api')).getConfig;
-  }
-
-  it('fetches /config.json once and memoises it', async () => {
-    let calls = 0;
-    server.use(
-      http.get('*/config.json', () => {
-        calls += 1;
-        return HttpResponse.json({ googleMapsApiKey: 'key-1' });
-      }),
-    );
-    const getConfig = await freshGetConfig();
-
-    expect(await getConfig()).toEqual({ googleMapsApiKey: 'key-1' });
-    expect(await getConfig()).toEqual({ googleMapsApiKey: 'key-1' });
-    expect(calls).toBe(1);
-  });
-
-  it.each([
-    ['a server error', () => new HttpResponse(null, { status: 500 })],
-    ['a network failure', () => HttpResponse.error()],
-    ['malformed json', () => new HttpResponse('nope', { status: 200 })],
-  ])('falls back to an empty key on %s', async (_name, respond) => {
-    server.use(http.get('*/config.json', respond));
-    const getConfig = await freshGetConfig();
-
-    expect(await getConfig()).toEqual({ googleMapsApiKey: '' });
   });
 });
 

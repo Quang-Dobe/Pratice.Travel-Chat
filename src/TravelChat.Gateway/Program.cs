@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.Identity.Web;
 using TravelChat.Gateway.Features.Auth;
+using TravelChat.Gateway.Features.Maps;
 using TravelChat.Gateway.Features.Proxy;
 using TravelChat.Gateway.Features.Token;
 using TravelChat.ServiceDefaults;
@@ -13,6 +14,8 @@ builder.AddServiceDefaults();
 builder.Services.Configure<InternalTokenOptions>(
     builder.Configuration.GetSection(InternalTokenOptions.SectionName));
 builder.Services.AddSingleton<TokenIssuer>();
+builder.Services.Configure<MapsOptions>(
+    builder.Configuration.GetSection(MapsOptions.SectionName));
 
 builder.Services
     .AddAuthentication(options =>
@@ -39,7 +42,8 @@ builder.Services.AddAuthorizationBuilder()
 builder.Services
     .AddReverseProxy()
     .LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"))
-    .AddTokenTransform();
+    .AddTokenTransform()
+    .AddMapsTransform();
 
 var app = builder.Build();
 app.UseAuthentication();

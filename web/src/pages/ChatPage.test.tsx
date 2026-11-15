@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
 import { setupServer } from 'msw/node';
 import { createMemoryRouter, RouterProvider } from 'react-router';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   ApiError,
   type Conversation,
@@ -13,6 +13,19 @@ import {
   type PlanCard,
 } from '../api/api';
 import { ChatPage } from './ChatPage';
+
+vi.mock('../components/PlanMap', () => ({
+  PlanMap: ({ card }: { card: PlanCard }) =>
+    card.reviewPins.length > 0 ? (
+      <ul aria-label="Map points">
+        {card.reviewPins.map((pin) => (
+          <li key={`${pin.kind}-${pin.name}`}>
+            {`${pin.kind === 'restaurant' ? 'Restaurant' : 'Place'}: ${pin.name}`}
+          </li>
+        ))}
+      </ul>
+    ) : null,
+}));
 
 const encoder = new TextEncoder();
 
@@ -37,9 +50,7 @@ function gatedStream(first: Uint8Array, rest: Uint8Array[]) {
   return { body, release };
 }
 
-const server = setupServer(
-  http.get('*/config.json', () => HttpResponse.json({ googleMapsApiKey: '' })),
-);
+const server = setupServer();
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
 afterEach(() => {

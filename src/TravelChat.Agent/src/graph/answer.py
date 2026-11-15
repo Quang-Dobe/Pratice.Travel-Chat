@@ -1,5 +1,7 @@
 import copy
 from collections import Counter
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from html import unescape
 from typing import Any, cast
 
@@ -24,6 +26,7 @@ from src.utils.reviews import (
     pin_names,
     pin_query,
     sources,
+    top_hit_urls,
 )
 from src.utils.tools import RawCall, ToolUse, tool_use
 from src.utils.trip import Brief, Trip, today
@@ -39,6 +42,8 @@ ARTIFACT_DOMAIN = "artifact"
 TURN_CAPS: dict[str, int] = {SEARCH_AGENT: 2, FETCH_AGENT: 2, ARTIFACT_AGENT: 1}
 TURN_LIMIT_TEXT = "limit reached for this turn"
 FETCH_REFUSED = "only URLs from this turn's search results can be read"
+AUTO_FETCH_URLS = 3
+AUTO_FETCH_REQUEST = "Read these pages and report what reviewers say about {subject}:\n{urls}"
 
 SYSTEM_PROMPT = f"""\
 You are Q, a travel and weather assistant. You help people with destinations, weather and \
@@ -49,6 +54,12 @@ climate, attractions, flights, hotels, budgets, and trip dates. <today> holds to
 only help with travel and weather, and offer to help with a trip.
 - You answer questions directly. When the user wants a whole trip planned, invite them to describe \
 it and say you will plan it.
+- Give a fast, direct answer first. Go deeper only when the user asks for more.
+- Ask a question only when an important fact is missing and cannot be found in the conversation. \
+The trip on screen (destination, dates, the picked hotel and flight) counts as known: use it \
+instead of asking.
+- When you have enough to act, act: for a review request, search right away with what you know. \
+Never ask about preferences (style, budget, area) unless the user raised them.
 </scope>
 
 <tools>
@@ -159,6 +170,52 @@ def _refused(call: ToolCall, text: str) -> ToolMessage:
     )
 
 
+@dataclass
+class Turn:
+    by_name: dict[str, BaseTool]
+    readable: set[str]
+    messages: list[BaseMessage]
+    agent_calls: Counter[str] = field(default_factory=Counter)
+    uses: list[ToolUse] = field(default_factory=list)
+    searches: list[Search] = field(default_factory=list)
+    pages: list[RawCall] = field(default_factory=list)
+
+
+async def _dispatch(turn: Turn, call: ToolCall) -> None:
+    tool = turn.by_name.get(call["name"])
+    if tool is None:
+        turn.messages.append(_refused(call, f"Unknown tool {call['name']}."))
+        return
+    cap = TURN_CAPS.get(call["name"])
+    if cap is not None and turn.agent_calls[call["name"]] >= cap:
+        turn.messages.append(_refused(call, TURN_LIMIT_TEXT))
+        return
+    turn.agent_calls[call["name"]] += 1
+    result = await tool.ainvoke(call)
+    raw = _raw_calls(result) or []
+    if result.status != "error" and call["name"] == SEARCH_AGENT:
+        turn.searches.append((str(call["args"].get("request", "")), raw))
+        turn.readable |= hit_urls(raw)
+        result = _with_results(result, raw)
+    elif result.status != "error" and call["name"] == FETCH_AGENT:
+        turn.pages.extend(raw)
+    turn.messages.append(result)
+    turn.uses.extend(_uses_of(call["name"], result))
+
+
+def _auto_fetch_call(turn: Turn, fresh: Sequence[Search], rounds: int) -> ToolCall | None:
+    if FETCH_AGENT not in turn.by_name or not fresh or turn.agent_calls[FETCH_AGENT] > 0:
+        return None
+    hits = [call for _, raw in fresh for call in raw]
+    urls = [url for url in top_hit_urls(hits, AUTO_FETCH_URLS) if url in turn.readable]
+    if not urls:
+        return None
+    request = AUTO_FETCH_REQUEST.format(subject=fresh[0][0], urls="\n".join(urls))
+    return ToolCall(
+        name=FETCH_AGENT, args={"request": request}, id=f"auto-fetch-{rounds}", type="tool_call"
+    )
+
+
 async def pin_reviews(
     state: PlannerState, deps: PlannerDeps, reply: str
 ) -> tuple[list[PlanCard], list[ToolUse]]:
@@ -195,10 +252,7 @@ async def run(state: PlannerState, deps: PlannerDeps) -> dict[str, Any]:
         *chat_history(state["messages"]),
     ]
     texts: list[str] = []
-    uses: list[ToolUse] = []
-    searches: list[Search] = []
-    pages: list[RawCall] = []
-    agent_calls: Counter[str] = Counter()
+    turn = Turn(by_name=by_name, readable=readable, messages=messages)
     last_id: str | None = None
     rounds = 0
     while True:
@@ -211,26 +265,14 @@ async def run(state: PlannerState, deps: PlannerDeps) -> dict[str, Any]:
         if final or not reply.tool_calls:
             break
         rounds += 1
+        known = len(turn.searches)
         for call in reply.tool_calls:
-            tool = by_name.get(call["name"])
-            if tool is None:
-                messages.append(_refused(call, f"Unknown tool {call['name']}."))
-                continue
-            cap = TURN_CAPS.get(call["name"])
-            if cap is not None and agent_calls[call["name"]] >= cap:
-                messages.append(_refused(call, TURN_LIMIT_TEXT))
-                continue
-            agent_calls[call["name"]] += 1
-            result = await tool.ainvoke(call)
-            raw = _raw_calls(result) or []
-            if result.status != "error" and call["name"] == SEARCH_AGENT:
-                searches.append((str(call["args"].get("request", "")), raw))
-                readable |= hit_urls(raw)
-                result = _with_results(result, raw)
-            elif result.status != "error" and call["name"] == FETCH_AGENT:
-                pages.extend(raw)
-            messages.append(result)
-            uses.extend(_uses_of(call["name"], result))
+            await _dispatch(turn, call)
+        auto = _auto_fetch_call(turn, turn.searches[known:], rounds)
+        if auto is not None:
+            messages.append(AIMessage(content="", tool_calls=[auto]))
+            await _dispatch(turn, auto)
+    searches, pages, uses = turn.searches, turn.pages, turn.uses
     text = PARAGRAPH_BREAK.join(texts) or NO_ANSWER
     items = sources(searches, pages)
     if items:

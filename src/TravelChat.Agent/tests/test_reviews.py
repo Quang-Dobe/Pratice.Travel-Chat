@@ -24,6 +24,7 @@ from src.utils.reviews import (
     pin_names,
     pin_query,
     sources,
+    top_hit_urls,
 )
 from src.utils.tools import RawCall, Tools
 from src.utils.trip import Budget, ReviewPin
@@ -179,6 +180,20 @@ def test_pages_that_were_read_come_before_the_other_hits() -> None:
         ["https://h3.example", "https://h2.example", "https://h1.example"]
     ]
     assert items[0]["links"][0]["title"] == "H3"
+
+
+def test_top_hit_urls_keep_search_order_without_repeats_and_stop_at_the_limit() -> None:
+    first = search_ok(hit("A", "https://a.example"), hit("B", "https://b.example"))
+    second = search_ok(hit("A again", "https://a.example"), hit("C", "https://c.example"))
+    insecure = search_ok(hit("Plain", "http://plain.example"))
+
+    assert top_hit_urls([insecure, first, second], 3) == [
+        "https://a.example",
+        "https://b.example",
+        "https://c.example",
+    ]
+    assert top_hit_urls([first, second], 2) == ["https://a.example", "https://b.example"]
+    assert top_hit_urls([], 3) == []
 
 
 def test_a_failed_or_empty_search_adds_no_item() -> None:

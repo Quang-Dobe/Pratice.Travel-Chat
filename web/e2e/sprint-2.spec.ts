@@ -272,7 +272,7 @@ async function settled(page: Page): Promise<void> {
 async function sendAndSettle(page: Page, text: string): Promise<void> {
   const before = await assistantBubbles(page).count();
   await messageBox(page).fill(text);
-  await page.getByRole('button', { name: 'Send' }).click();
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
   await expect(assistantBubbles(page)).toHaveCount(before + 1);
   await settled(page);
 }
@@ -320,6 +320,11 @@ async function optionLabels(group: Locator): Promise<string[]> {
     labels.push(await rowLabel(rows.nth(index)));
   }
   return labels;
+}
+
+function longestHotelName(labels: string[]): string {
+  const names = labels.map((label) => label.replace(/,\s*rated\b.*$/s, '').trim());
+  return names.reduce((best, name) => (name.length > best.length ? name : best), names[0] ?? '');
 }
 
 async function checkedLabel(group: Locator): Promise<string> {
@@ -538,10 +543,19 @@ function expectDraftTable(rows: SheetRow[], dayCount: number, optionCount: numbe
   expect(body.every((row) => row.length === EXPORT_COLUMNS.length)).toBe(true);
 }
 
+function restartAndWait(services: string[]): void {
+  if (services.length === 0) {
+    return;
+  }
+  compose(['restart', ...services]);
+  compose(['up', '-d', '--wait', '--wait-timeout', '300', ...services]);
+}
+
 async function withComposeOverride(
   service: string,
   variable: string,
   run: () => Promise<void>,
+  alsoRestart: string[] = [],
 ): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), 'e2e-override-'));
   const override = join(dir, 'override.yaml');
@@ -559,11 +573,13 @@ async function withComposeOverride(
       '300',
       service,
     ]);
+    restartAndWait(alsoRestart);
     await run();
   } finally {
     rmSync(dir, { recursive: true, force: true });
     try {
       compose(['up', '-d', '--wait', '--wait-timeout', '300', service]);
+      restartAndWait(alsoRestart);
     } catch (error) {
       test.info().annotations.push({
         type: 'cleanup-failed',
@@ -615,7 +631,10 @@ test.describe('sprint-2 Tokyo trip', () => {
       await expect(planCards(page)).toHaveCount(1);
       const card = latestCard(page);
       await expectOpenCard(card);
-      await expect(tripMap(card), 'needs GOOGLE_MAPS_API_KEY set in .env').toBeVisible();
+      await expect(
+        tripMap(card),
+        'needs GEOAPIFY_API_KEY set in .env (gateway maps proxy)',
+      ).toBeVisible();
       await expect(card.getByText(MAP_NOTICE)).toHaveCount(0);
       await expect(tripMap(card)).toHaveCount(1);
 
@@ -707,7 +726,8 @@ test.describe('sprint-2 Tokyo trip', () => {
     async () => {
       test.setTimeout(SINGLE_TEST_TIMEOUT_MS);
       const card = latestCard(page);
-      const hotel = (await checkedLabel(optionGroup(card, 'Hotel options'))).slice(0, 80);
+      const hotels = await optionLabels(optionGroup(card, 'Hotel options'));
+      const hotel = longestHotelName(hotels).slice(0, 80);
       const airline = (await checkedLabel(optionGroup(card, 'Flight options'))).split(',')[0];
 
       await expectSourcedReview(
@@ -1005,28 +1025,34 @@ test.describe('sprint-2 edge cases', () => {
   test.describe.configure({ timeout: SINGLE_TEST_TIMEOUT_MS });
 
   test(
-    'E2E-10 no Google Maps key shows the card without a map',
+    'E2E-10 no map key shows the card without a map',
     {
       annotation: {
         type: 'covers',
-        description: 'Constraint: no Google Maps key shows the card without the map and a notice',
+        description: 'Constraint: no map key shows the card without the map and a notice',
       },
     },
     async ({ browser }) => {
       requirePlanEnv();
       const creds = requireCreds('E2E_USER_A');
-      await withComposeOverride('web', 'GOOGLE_MAPS_API_KEY', async () => {
-        await asUser(browser, creds, async (page) => {
-          await createConversation(page, DEMO_REQUEST);
-          await sendAndSettle(page, `From Singapore (SIN), starting ${isoIn(5)}.`);
+      // the gateway signing key changes on restart and q-user caches its JWKS, so restart q-user too
+      await withComposeOverride(
+        'q-gateway',
+        'Maps__ApiKey',
+        async () => {
+          await asUser(browser, creds, async (page) => {
+            await createConversation(page, DEMO_REQUEST);
+            await sendAndSettle(page, `From Singapore (SIN), starting ${isoIn(5)}.`);
 
-          const card = latestCard(page);
-          await expectOpenCard(card);
-          await expect(card.getByText(MAP_NOTICE)).toBeVisible();
-          await expect(tripMap(card)).toHaveCount(0);
-          await expectApprovalPills(page);
-        });
-      });
+            const card = latestCard(page);
+            await expectOpenCard(card);
+            await expect(card.getByText(MAP_NOTICE)).toBeVisible();
+            await expect(tripMap(card)).toHaveCount(0);
+            await expectApprovalPills(page);
+          });
+        },
+        ['q-user'],
+      );
     },
   );
 

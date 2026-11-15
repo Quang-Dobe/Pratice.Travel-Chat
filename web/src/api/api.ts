@@ -203,9 +203,6 @@ const PillsData = z.object({ items: z.array(Pill) });
 const NoticeData = z.object({ message: z.string() });
 const MapPinsData = z.object({ cardId: z.string(), pins: z.array(ReviewPin) });
 
-const AppConfig = z.object({ googleMapsApiKey: z.string().default('') });
-export type AppConfig = z.infer<typeof AppConfig>;
-
 export type StreamEvent =
   | { type: 'token'; text: string }
   | { type: 'tool_call'; kind: string; name: string; status: ToolStatus }
@@ -237,27 +234,6 @@ export async function apiFetch(path: string, init?: RequestInit): Promise<Respon
 export async function getMe(): Promise<Me> {
   const response = await apiFetch('/api/users/me');
   return Me.parse(await response.json());
-}
-
-let configPromise: Promise<AppConfig> | null = null;
-
-async function fetchConfig(): Promise<AppConfig> {
-  try {
-    const response = await fetch(new URL('/config.json', window.location.origin), {
-      credentials: 'same-origin',
-    });
-    if (!response.ok) {
-      return { googleMapsApiKey: '' };
-    }
-    return AppConfig.parse(await response.json());
-  } catch {
-    return { googleMapsApiKey: '' };
-  }
-}
-
-export function getConfig(): Promise<AppConfig> {
-  configPromise ??= fetchConfig();
-  return configPromise;
 }
 
 export async function listConversations(): Promise<ConversationItem[]> {

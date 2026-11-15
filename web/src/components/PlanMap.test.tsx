@@ -1,79 +1,63 @@
 import '@testing-library/jest-dom/vitest';
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Leg, PlanCard } from '../api/api';
-import { PlanMap, resetMapAuthFailureForTests } from './PlanMap';
+import { PlanMap } from './PlanMap';
 
-const { getConfig, fitBounds, fakeMap, polylineBehavior } = vi.hoisted(() => {
+const { fitBounds, fakeMap, layerBehavior } = vi.hoisted(() => {
   const fit = vi.fn();
   return {
-    getConfig: vi.fn(),
     fitBounds: fit,
     fakeMap: { fitBounds: fit },
-    polylineBehavior: { throws: false },
+    layerBehavior: { throws: false },
   };
 });
 
-vi.mock('../api/api', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../api/api')>()),
-  getConfig,
-}));
-
-vi.mock('@vis.gl/react-google-maps', () => ({
-  APIProvider: ({
-    apiKey,
+vi.mock('react-map-gl/maplibre', () => ({
+  Map: ({
+    mapStyle,
+    onMove,
     onError,
     children,
   }: {
-    apiKey: string;
+    mapStyle: string;
+    onMove: (event: { viewState: { zoom: number } }) => void;
     onError: () => void;
     children: ReactNode;
   }) => (
-    <div data-testid="provider" data-key={apiKey}>
+    <div data-testid="map" data-style={mapStyle}>
+      <button type="button" onClick={() => onMove({ viewState: { zoom: 7 } })}>
+        zoom
+      </button>
       <button type="button" onClick={onError}>
         fail load
       </button>
       {children}
     </div>
   ),
-  Map: ({
-    onCameraChanged,
-    children,
-  }: {
-    onCameraChanged: (event: { detail: { zoom: number } }) => void;
-    children: ReactNode;
-  }) => (
-    <div data-testid="map">
-      <button type="button" onClick={() => onCameraChanged({ detail: { zoom: 7 } })}>
-        zoom
-      </button>
+  Marker: ({ children }: { children: ReactNode }) => <div data-testid="marker">{children}</div>,
+  Source: ({ data, children }: { data: { features: unknown[] }; children: ReactNode }) => (
+    <div data-testid="legs-source" data-features={data.features.length}>
       {children}
     </div>
   ),
-  AdvancedMarker: ({ title, children }: { title?: string; children: ReactNode }) => (
-    <div data-testid="marker" data-title={title}>
-      {children}
-    </div>
-  ),
-  Polyline: () => {
-    if (polylineBehavior.throws) {
-      throw new Error('maps api is dead');
+  Layer: () => {
+    if (layerBehavior.throws) {
+      throw new Error('map is dead');
     }
-    return <div data-testid="line" />;
+    return <div data-testid="layer" />;
   },
-  useMap: () => fakeMap,
+  NavigationControl: () => <div data-testid="nav" />,
+  useMap: () => ({ current: fakeMap }),
 }));
 
 afterEach(cleanup);
 
 beforeEach(() => {
-  resetMapAuthFailureForTests();
-  polylineBehavior.throws = false;
-  getConfig.mockReset();
+  layerBehavior.throws = false;
   fitBounds.mockReset();
-  getConfig.mockResolvedValue({ googleMapsApiKey: 'key-1' });
 });
 
 const placedLeg: Leg = {
@@ -176,16 +160,18 @@ const noPoints = makeCard({
 });
 
 describe('PlanMap', () => {
-  it('draws the map with markers and lines when the key is present', async () => {
+  it('draws the map with markers and lines from the gateway style url', async () => {
     render(<PlanMap card={makeCard()} pickedFlightId="f1" />);
 
     const region = await screen.findByRole('region', { name: 'Trip map' });
-    expect(within(region).getByTestId('provider')).toHaveAttribute('data-key', 'key-1');
-    expect(within(region).getAllByTestId('line')).toHaveLength(1);
+    const style = within(region).getByTestId('map').getAttribute('data-style') ?? '';
+    expect(style.endsWith('/api/maps/v1/styles/osm-bright/style.json')).toBe(true);
+    expect(style).not.toContain('apiKey');
+    expect(within(region).getByTestId('legs-source')).toHaveAttribute('data-features', '1');
     expect(
       within(region)
-        .getAllByTestId('marker')
-        .map((marker) => marker.dataset.title),
+        .getAllByTitle(/.+/)
+        .map((marker) => marker.getAttribute('title')),
     ).toEqual(
       expect.arrayContaining([
         'Hotel: Hotel one',
@@ -196,65 +182,19 @@ describe('PlanMap', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it('shows a notice and loads no provider when the key is empty', async () => {
-    getConfig.mockResolvedValue({ googleMapsApiKey: '' });
-    render(<PlanMap card={makeCard()} pickedFlightId="f1" />);
-
-    expect(await screen.findByRole('alert')).toHaveTextContent('The map is unavailable right now.');
-    expect(screen.queryByTestId('provider')).not.toBeInTheDocument();
-    expect(screen.queryByRole('region', { name: 'Trip map' })).not.toBeInTheDocument();
-    expect(screen.getByRole('list', { name: 'Flight legs' })).toBeInTheDocument();
-  });
-
-  it('shows a notice when the script fails to load', async () => {
+  it('shows a notice and keeps the lists when the map reports an error', async () => {
     render(<PlanMap card={makeCard()} pickedFlightId="f1" />);
 
     await userEvent.click(await screen.findByRole('button', { name: 'fail load' }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent('The map is unavailable right now.');
-    expect(screen.queryByTestId('provider')).not.toBeInTheDocument();
-  });
-
-  it('shows a notice when Google reports an auth failure', async () => {
-    render(<PlanMap card={makeCard()} pickedFlightId="f1" />);
-    await screen.findByTestId('provider');
-
-    const target = window as unknown as { gm_authFailure?: () => void };
-    expect(target.gm_authFailure).toBeTypeOf('function');
-    act(() => target.gm_authFailure?.());
-
-    expect(await screen.findByRole('alert')).toHaveTextContent('The map is unavailable right now.');
-  });
-
-  it('starts a later map in the failed state once Google has reported an auth failure', async () => {
-    const target = window as unknown as { gm_authFailure?: () => void };
-    act(() => target.gm_authFailure?.());
-
-    render(<PlanMap card={makeCard()} pickedFlightId="f1" />);
-
-    expect(await screen.findByRole('alert')).toHaveTextContent('The map is unavailable right now.');
-    expect(screen.queryByRole('region', { name: 'Trip map' })).not.toBeInTheDocument();
-    expect(screen.queryByTestId('provider')).not.toBeInTheDocument();
-  });
-
-  it('flips every mounted map to the notice when the auth failure fires', async () => {
-    render(
-      <>
-        <PlanMap card={makeCard()} pickedFlightId="f1" />
-        <PlanMap card={makeCard()} pickedFlightId="f1" />
-      </>,
-    );
-    await waitFor(() => expect(screen.getAllByTestId('provider')).toHaveLength(2));
-
-    const target = window as unknown as { gm_authFailure?: () => void };
-    act(() => target.gm_authFailure?.());
-
-    expect(await screen.findAllByRole('alert')).toHaveLength(2);
-    expect(screen.queryByTestId('provider')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('map')).not.toBeInTheDocument();
+    expect(screen.getByRole('list', { name: 'Map points' })).toBeInTheDocument();
+    expect(screen.getByRole('list', { name: 'Flight legs' })).toBeInTheDocument();
   });
 
   it('shows the notice and keeps the lists when the map throws while rendering', async () => {
-    polylineBehavior.throws = true;
+    layerBehavior.throws = true;
     const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     try {
       render(<PlanMap card={makeCard()} pickedFlightId="f1" />);
@@ -270,11 +210,11 @@ describe('PlanMap', () => {
     }
   });
 
-  it('shows a notice and never reads the config when no point has coordinates', async () => {
+  it('shows a notice and no map when no point has coordinates', async () => {
     render(<PlanMap card={noPoints} pickedFlightId="f1" />);
 
     expect(await screen.findByRole('alert')).toHaveTextContent('The map is unavailable right now.');
-    expect(getConfig).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('map')).not.toBeInTheDocument();
     expect(screen.queryByRole('list', { name: 'Map points' })).not.toBeInTheDocument();
   });
 
@@ -334,7 +274,7 @@ describe('PlanMap', () => {
     const { rerender } = render(<PlanMap card={makeCard()} pickedFlightId="f1" />);
     const map = await screen.findByTestId('map');
     await waitFor(() => expect(fitBounds).toHaveBeenCalledTimes(1));
-    const before = fitBounds.mock.calls[0]?.[0] as { north: number };
+    const before = fitBounds.mock.calls[0]?.[0] as number[][];
 
     rerender(
       <PlanMap
@@ -350,12 +290,11 @@ describe('PlanMap', () => {
 
     expect(screen.getByTestId('map')).toBe(map);
     await waitFor(() => expect(fitBounds).toHaveBeenCalledTimes(2));
-    const after = fitBounds.mock.calls[1]?.[0] as { north: number };
-    expect(after.north).toBeGreaterThan(before.north);
-    expect(getConfig).toHaveBeenCalledTimes(1);
+    const after = fitBounds.mock.calls[1]?.[0] as number[][];
+    expect(after[1]?.[1]).toBeGreaterThan(before[1]?.[1] ?? Number.POSITIVE_INFINITY);
   });
 
-  it('keeps data-zoom current from camera changes', async () => {
+  it('keeps data-zoom current from map moves', async () => {
     render(<PlanMap card={makeCard()} pickedFlightId="f1" />);
     const region = await screen.findByRole('region', { name: 'Trip map' });
 

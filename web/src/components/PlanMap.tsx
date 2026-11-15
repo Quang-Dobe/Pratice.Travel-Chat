@@ -1,13 +1,15 @@
 import { Alert, Box, Typography } from '@mui/material';
+import 'maplibre-gl/dist/maplibre-gl.css';
+import { Component, type ReactNode, useEffect, useState } from 'react';
 import {
-  AdvancedMarker,
-  APIProvider,
-  Map as GoogleMap,
-  Polyline,
+  Layer,
+  Map as MapView,
+  Marker,
+  NavigationControl,
+  Source,
   useMap,
-} from '@vis.gl/react-google-maps';
-import { Component, type ReactNode, useEffect, useState, useSyncExternalStore } from 'react';
-import { getConfig, type Leg, type PlanCard } from '../api/api';
+} from 'react-map-gl/maplibre';
+import type { Leg, PlanCard } from '../api/api';
 
 const HOTEL_COLOR = '#1565c0';
 const STOP_COLOR = '#2e7d32';
@@ -49,38 +51,8 @@ type Route = {
   times: string;
 };
 
-type GmWindow = { gm_authFailure: (() => void) | undefined };
-
-let mapAuthFailed = false;
-const authListeners = new Set<() => void>();
-
-function subscribeAuthFailure(listener: () => void): () => void {
-  authListeners.add(listener);
-  return () => {
-    authListeners.delete(listener);
-  };
-}
-
-function readAuthFailure(): boolean {
-  return mapAuthFailed;
-}
-
-function reportAuthFailure(): void {
-  mapAuthFailed = true;
-  for (const listener of [...authListeners]) {
-    listener();
-  }
-}
-
-if (typeof window !== 'undefined') {
-  (window as unknown as GmWindow).gm_authFailure = reportAuthFailure;
-}
-
-export function resetMapAuthFailureForTests(): void {
-  mapAuthFailed = false;
-  for (const listener of [...authListeners]) {
-    listener();
-  }
+function styleUrl(): string {
+  return `${window.location.origin}/api/maps/v1/styles/osm-bright/style.json`;
 }
 
 type MapBoundaryProps = { children: ReactNode };
@@ -192,11 +164,34 @@ function boundsOf(coordinates: LatLng[]) {
 type Edges = ReturnType<typeof boundsOf>;
 
 function FitBounds({ north, south, east, west }: Edges) {
-  const map = useMap();
+  const { current: map } = useMap();
   useEffect(() => {
-    map?.fitBounds({ north, south, east, west }, FIT_PADDING);
+    map?.fitBounds(
+      [
+        [west, south],
+        [east, north],
+      ],
+      { padding: FIT_PADDING },
+    );
   }, [map, north, south, east, west]);
   return null;
+}
+
+function legsGeoJson(routes: Route[]) {
+  return {
+    type: 'FeatureCollection' as const,
+    features: routes.map((route) => ({
+      type: 'Feature' as const,
+      properties: {},
+      geometry: {
+        type: 'LineString' as const,
+        coordinates: [
+          [route.from.lng, route.from.lat],
+          [route.to.lng, route.to.lat],
+        ],
+      },
+    })),
+  };
 }
 
 function colorOf(kind: PointKind): string {
@@ -240,10 +235,7 @@ type PlanMapProps = {
 };
 
 export function PlanMap({ card, pickedFlightId, pickedHotelId }: PlanMapProps) {
-  const [apiKey, setApiKey] = useState<string | null>(null);
-  const [loadFailed, setFailed] = useState(false);
-  const authFailed = useSyncExternalStore(subscribeAuthFailure, readAuthFailure, readAuthFailure);
-  const failed = loadFailed || authFailed;
+  const [failed, setFailed] = useState(false);
   const [zoom, setZoom] = useState<number | null>(null);
 
   const legs = card.flights.find((flight) => flight.id === pickedFlightId)?.legs ?? [];
@@ -253,30 +245,11 @@ export function PlanMap({ card, pickedFlightId, pickedHotelId }: PlanMapProps) {
     ...points.map((point) => ({ lat: point.lat, lng: point.lon })),
     ...routes.flatMap((route) => [route.from, route.to]),
   ];
-  const hasCoordinates = coordinates.length > 0;
-  const edges = hasCoordinates ? boundsOf(coordinates) : null;
-
-  useEffect(() => {
-    if (!hasCoordinates) {
-      return undefined;
-    }
-    let active = true;
-    void getConfig().then((config) => {
-      if (active) {
-        setApiKey(config.googleMapsApiKey);
-      }
-    });
-    return () => {
-      active = false;
-    };
-  }, [hasCoordinates]);
+  const edges = coordinates.length > 0 ? boundsOf(coordinates) : null;
 
   function renderMap() {
-    if (edges === null || apiKey === '' || failed) {
+    if (edges === null || failed) {
       return <Alert severity="info">The map is unavailable right now.</Alert>;
-    }
-    if (apiKey === null) {
-      return null;
     }
     return (
       <MapBoundary>
@@ -286,43 +259,45 @@ export function PlanMap({ card, pickedFlightId, pickedHotelId }: PlanMapProps) {
           data-zoom={zoom ?? undefined}
           sx={{ height: 320, borderRadius: 1, overflow: 'hidden' }}
         >
-          <APIProvider apiKey={apiKey} onError={() => setFailed(true)}>
-            <GoogleMap
-              mapId="DEMO_MAP_ID"
-              gestureHandling="cooperative"
-              defaultBounds={{ ...edges, padding: FIT_PADDING }}
-              onCameraChanged={(event) => setZoom(event.detail.zoom)}
-              style={{ width: '100%', height: '100%' }}
-            >
-              <FitBounds {...edges} />
-              {routes.map((route) => (
-                <Polyline
-                  key={route.key}
-                  path={[route.from, route.to]}
-                  strokeColor={FLIGHT_COLOR}
-                  strokeWeight={3}
-                />
-              ))}
-              {routes.map((route) => (
-                <AdvancedMarker key={`${route.key}-times`} position={route.middle}>
-                  <Badge text={route.times} color={FLIGHT_COLOR} highlighted={false} />
-                </AdvancedMarker>
-              ))}
-              {points.map((point) => (
-                <AdvancedMarker
-                  key={point.key}
-                  position={{ lat: point.lat, lng: point.lon }}
-                  title={point.description}
-                >
+          <MapView
+            mapStyle={styleUrl()}
+            initialViewState={{
+              bounds: [
+                [edges.west, edges.south],
+                [edges.east, edges.north],
+              ],
+              fitBoundsOptions: { padding: FIT_PADDING },
+            }}
+            onMove={(event) => setZoom(event.viewState.zoom)}
+            onError={() => setFailed(true)}
+            style={{ width: '100%', height: '100%' }}
+          >
+            <NavigationControl showCompass={false} />
+            <FitBounds {...edges} />
+            <Source type="geojson" data={legsGeoJson(routes)}>
+              <Layer type="line" paint={{ 'line-color': FLIGHT_COLOR, 'line-width': 3 }} />
+            </Source>
+            {routes.map((route) => (
+              <Marker
+                key={`${route.key}-times`}
+                longitude={route.middle.lng}
+                latitude={route.middle.lat}
+              >
+                <Badge text={route.times} color={FLIGHT_COLOR} highlighted={false} />
+              </Marker>
+            ))}
+            {points.map((point) => (
+              <Marker key={point.key} longitude={point.lon} latitude={point.lat}>
+                <span title={point.description}>
                   <Badge
                     text={point.badge}
                     color={colorOf(point.kind)}
                     highlighted={point.highlighted}
                   />
-                </AdvancedMarker>
-              ))}
-            </GoogleMap>
-          </APIProvider>
+                </span>
+              </Marker>
+            ))}
+          </MapView>
         </Box>
       </MapBoundary>
     );

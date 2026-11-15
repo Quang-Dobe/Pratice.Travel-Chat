@@ -131,6 +131,11 @@ def hit_urls(calls: Sequence[RawCall]) -> set[str]:
     return {hit["url"] for hit in _links(calls, SEARCH_TOOL)}
 
 
+def top_hit_urls(calls: Sequence[RawCall], limit: int) -> list[str]:
+    ordered = dict.fromkeys(hit["url"] for hit in _links(calls, SEARCH_TOOL))
+    return list(ordered)[:limit]
+
+
 def hits_listing(calls: Sequence[RawCall]) -> str:
     hits = list({hit["url"]: hit for hit in _links(calls, SEARCH_TOOL)}.values())
     if not hits:

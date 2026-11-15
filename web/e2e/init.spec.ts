@@ -274,7 +274,7 @@ async function asUser<T>(
 
 async function sendMessage(page: Page, text: string): Promise<void> {
   await messageBox(page).fill(text);
-  await page.getByRole('button', { name: 'Send' }).click();
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
 }
 
 async function expectReplies(page: Page, count: number): Promise<void> {

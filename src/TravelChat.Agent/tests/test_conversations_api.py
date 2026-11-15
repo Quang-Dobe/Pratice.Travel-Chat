@@ -16,7 +16,9 @@ from langchain_core.messages import (
     AIMessage,
     AIMessageChunk,
     BaseMessage,
+    HumanMessage,
     SystemMessage,
+    ToolMessage,
 )
 from langchain_core.messages.tool import tool_call_chunk
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
@@ -164,6 +166,7 @@ class FakeProvider:
         self.model_calls: list[str] = []
         self.scripts: dict[str, list[Any]] = {}
         self.queues: dict[str, list[Any]] = {}
+        self.fetch_requests: list[str] = []
         self.reset()
 
     def reset(self) -> None:
@@ -181,6 +184,7 @@ class FakeProvider:
         }
         queue_turns(self.queues, classification())
         self.model_calls = []
+        self.fetch_requests = []
 
     @property
     def errors(self) -> type[Exception]:
@@ -198,7 +202,17 @@ class FakeProvider:
     ) -> Runnable[Any, Any]:
         name = tools[0].name
         key = name.split("__")[0] if "__" in name else "answer"
-        return FakeChat(script=self.scripts[key])
+        chat = FakeChat(script=self.scripts[key])
+        if key != "fetch":
+            return chat
+
+        def record(messages: list[BaseMessage]) -> list[BaseMessage]:
+            if not any(isinstance(message, ToolMessage) for message in messages):
+                humans = [message for message in messages if isinstance(message, HumanMessage)]
+                self.fetch_requests.append(str(humans[-1].content))
+            return messages
+
+        return RunnableLambda(record) | chat
 
     def structured(self, model: BaseChatModel, schema: type[BaseModel]) -> Runnable[Any, Any]:
         name = schema.__name__
@@ -947,10 +961,7 @@ def script_review_answer(
             AIMessage("Guests like it."),
         ]
     fetch = {"url": fetch_url}
-    PROVIDER.scripts["answer"] += [
-        call_reply("fetch_agent", {"request": fetch["url"]}),
-        AIMessage(REVIEW_ANSWER),
-    ]
+    PROVIDER.scripts["answer"].append(AIMessage(REVIEW_ANSWER))
     PROVIDER.scripts["fetch"] += [call_reply("fetch__page", fetch), AIMessage("Quiet rooms.")]
     PROVIDER.queues["Classification"] = [Classification(verdict="travel", route="answer")]
 
@@ -1053,7 +1064,7 @@ def test_a_url_that_search_did_not_return_is_refused_and_never_fetched(
     assert "search__web" in names
 
 
-def test_the_answer_runs_each_review_agent_at_most_twice_per_turn(
+def test_the_answer_runs_the_search_agent_at_most_twice_per_turn(
     client: TestClient, user_a: dict[str, str]
 ) -> None:
     script_review_answer("Hotel A Tokyo", "Ramen B Tokyo")
@@ -1066,6 +1077,128 @@ def test_the_answer_runs_each_review_agent_at_most_twice_per_turn(
     [sourced] = [data for event, data in frames if event == "sources"]
     assert [item["subject"] for item in sourced["items"]] == ["Hotel A Tokyo", "Ramen B Tokyo"]
     assert PROVIDER.scripts["search"] == []
+
+
+def test_a_search_with_no_fetch_makes_the_code_fetch_the_top_three_hits(
+    client: TestClient, user_a: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hits = [
+        {"title": f"Hit {n}", "url": f"https://reviews.example/{n}", "snippet": "."}
+        for n in range(1, 5)
+    ]
+    monkeypatch.setitem(globals(), "SEARCH_HITS", hits)
+    fetched.clear()
+    script_review_answer(fetch_url="https://reviews.example/2")
+    conversation_id = create(client, user_a, "Reviews please")["id"]
+
+    frames = parse_frames(send(client, user_a, conversation_id, "Reviews please"))
+
+    assert fetched == ["https://reviews.example/2"]
+    used = [data["name"] for event, data in frames if event == "tool_call"]
+    assert {"search__web", "fetch__page"} <= set(used)
+    assert "".join(tokens_of(frames)) == REVIEW_ANSWER
+    [sourced] = [data for event, data in frames if event == "sources"]
+    assert sourced["items"][0]["links"][0]["url"] == "https://reviews.example/2"
+    [request] = PROVIDER.fetch_requests
+    assert "report what reviewers say about Hotel Gracery Tokyo reviews" in request
+    positions = [request.index(hit_item["url"]) for hit_item in hits[:3]]
+    assert positions == sorted(positions)
+    assert hits[3]["url"] not in request
+
+
+def test_a_model_made_fetch_in_the_search_round_means_no_automatic_fetch(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    fetched.clear()
+    url = "https://reviews.example/gracery"
+    both = AIMessage(
+        content="",
+        tool_calls=[
+            {"name": "search_agent", "args": {"request": "Hotel Gracery"}, "id": "c-search"},
+            {"name": "fetch_agent", "args": {"request": url}, "id": "c-fetch"},
+        ],
+    )
+    PROVIDER.scripts["answer"] += [both, AIMessage(REVIEW_ANSWER)]
+    PROVIDER.scripts["search"] += [call_reply("search__web", {"query": "g"}), AIMessage("Ok.")]
+    PROVIDER.scripts["fetch"] += [call_reply("fetch__page", {"url": url}), AIMessage("Quiet.")]
+    PROVIDER.queues["Classification"] = [Classification(verdict="travel", route="answer")]
+    conversation_id = create(client, user_a, "Reviews please")["id"]
+
+    frames = parse_frames(send(client, user_a, conversation_id, "Reviews please"))
+
+    assert fetched == [url]
+    assert PROVIDER.scripts["fetch"] == []
+    assert "".join(tokens_of(frames)) == REVIEW_ANSWER
+
+
+def test_a_search_without_hits_makes_no_automatic_fetch(
+    client: TestClient, user_a: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(globals(), "SEARCH_HITS", [])
+    fetched.clear()
+    script_review_answer()
+    conversation_id = create(client, user_a, "Reviews please")["id"]
+
+    frames = parse_frames(send(client, user_a, conversation_id, "Reviews please"))
+
+    assert fetched == []
+    assert len(PROVIDER.scripts["fetch"]) == 2
+    assert "notice" not in events_of(frames)
+    assert "".join(tokens_of(frames)) == REVIEW_ANSWER
+
+
+def test_without_a_fetch_agent_a_search_is_answered_with_no_fetch_attempt(
+    client: TestClient, user_a: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delitem(app.state.planner.agents, "fetch")
+    fetched.clear()
+    script_review_answer()
+    PROVIDER.scripts["fetch"].clear()
+    conversation_id = create(client, user_a, "Reviews please")["id"]
+
+    frames = parse_frames(send(client, user_a, conversation_id, "Reviews please"))
+
+    assert fetched == []
+    assert PROVIDER.fetch_requests == []
+    assert "notice" not in events_of(frames)
+    used = [data["name"] for event, data in frames if event == "tool_call"]
+    assert "search__web" in used
+    assert "fetch__page" not in used
+    assert "".join(tokens_of(frames)) == REVIEW_ANSWER
+
+
+def test_a_third_model_made_fetch_is_refused_and_no_automatic_fetch_fires(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    fetched.clear()
+    url = "https://reviews.example/gracery"
+    first_round = AIMessage(
+        content="",
+        tool_calls=[
+            {"name": "search_agent", "args": {"request": "Hotel Gracery"}, "id": "c-search"},
+            {"name": "fetch_agent", "args": {"request": url}, "id": "c-fetch-1"},
+        ],
+    )
+    PROVIDER.scripts["answer"] += [
+        first_round,
+        call_reply("fetch_agent", {"request": url}),
+        call_reply("fetch_agent", {"request": url}),
+        AIMessage(REVIEW_ANSWER),
+    ]
+    PROVIDER.scripts["search"] += [call_reply("search__web", {"query": "g"}), AIMessage("Ok.")]
+    for _ in range(2):
+        PROVIDER.scripts["fetch"] += [call_reply("fetch__page", {"url": url}), AIMessage("Quiet.")]
+    PROVIDER.queues["Classification"] = [Classification(verdict="travel", route="answer")]
+    conversation_id = create(client, user_a, "Reviews please")["id"]
+
+    frames = parse_frames(send(client, user_a, conversation_id, "Reviews please"))
+
+    assert fetched == [url, url]
+    assert len(PROVIDER.fetch_requests) == 2
+    assert PROVIDER.scripts["fetch"] == []
+    assert PROVIDER.scripts["answer"] == []
+    assert "notice" not in events_of(frames)
+    assert "".join(tokens_of(frames)) == REVIEW_ANSWER
 
 
 EXPORT_ANSWER = "Your file is ready."

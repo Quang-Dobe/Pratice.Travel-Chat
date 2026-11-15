@@ -1,14 +1,23 @@
 import '@testing-library/jest-dom/vitest';
 import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { NO_FORECAST, type Picked, type PlanCard as PlanCardData } from '../api/api';
 import { PlanCard } from './PlanCard';
 
-vi.mock('../api/api', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../api/api')>()),
-  getConfig: () => Promise.resolve({ googleMapsApiKey: '' }),
+vi.mock('react-map-gl/maplibre', () => ({
+  Map: ({ onError }: { onError: () => void }) => {
+    useEffect(() => {
+      onError();
+    }, [onError]);
+    return null;
+  },
+  Marker: () => null,
+  Source: () => null,
+  Layer: () => null,
+  NavigationControl: () => null,
+  useMap: () => ({ current: undefined }),
 }));
 
 afterEach(cleanup);
@@ -184,7 +193,7 @@ describe('PlanCard', () => {
     expect(screen.getAllByRole('link')).toHaveLength(4);
   });
 
-  it('keeps all content and shows a notice when the map has no key', async () => {
+  it('keeps all content and shows a notice when the map fails to load', async () => {
     const card: PlanCardData = {
       ...baseCard,
       reviewPins: [{ name: 'Ramen Bar', kind: 'restaurant', lat: 35.68, lon: 139.76 }],
