@@ -11,8 +11,10 @@ public sealed class HotelsServiceTests
         {
           "properties": [
             { "name": "Grand Hotel", "link": "https://grand.example/book", "property_token": "p1", "hotel_class": "5-star hotel", "overall_rating": 4.6,
+              "gps_coordinates": { "latitude": 48.8566, "longitude": 2.3522 },
               "total_rate": { "extracted_lowest": 540 }, "rate_per_night": { "extracted_lowest": 180 } },
             { "name": "Night Only", "link": "https://night.example/book", "property_token": "p2",
+              "gps_coordinates": { "latitude": 95.0, "longitude": 2.0 },
               "rate_per_night": { "extracted_lowest": 100 } },
             { "name": "Insecure", "link": "http://insecure.example/book", "total_rate": { "extracted_lowest": 50 } },
             { "name": "No Link", "total_rate": { "extracted_lowest": 60 } },
@@ -44,6 +46,34 @@ public sealed class HotelsServiceTests
         options[0].Summary.ShouldBe("Grand Hotel, 5-star hotel, rated 4.6");
         options[1].PriceUsd.ShouldBe(300m);
         options[1].DeepLink.ShouldBe("https://night.example/book");
+    }
+
+    [Fact]
+    public async Task GpsIsKeptWhenValidAndNullWhenOutOfRange()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var rig = new CacheRig(s_hotelKey);
+        var handler = new StubHandler(_ => StubHandler.Json(Body));
+        var service = new HotelsService(new StubHttpClientFactory(handler), rig.Fetch);
+
+        var result = await service.SearchAsync("Paris", s_checkIn, s_checkOut, 2, ct);
+
+        var options = result.Data.ShouldNotBeNull();
+        options[0].Location.ShouldBe(new HotelLocation(48.8566, 2.3522));
+        options[1].Location.ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task MissingGpsIsNull()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var rig = new CacheRig(s_hotelKey);
+        var body = """{"properties":[{"name":"Plain","link":"https://plain.example/b","total_rate":{"extracted_lowest":90}}]}""";
+        var service = new HotelsService(new StubHttpClientFactory(new StubHandler(_ => StubHandler.Json(body))), rig.Fetch);
+
+        var result = await service.SearchAsync("Paris", s_checkIn, s_checkOut, 1, ct);
+
+        result.Data.ShouldNotBeNull().Single().Location.ShouldBeNull();
     }
 
     [Fact]

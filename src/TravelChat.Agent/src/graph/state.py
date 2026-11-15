@@ -1,9 +1,9 @@
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 
 from langgraph.graph import MessagesState
 
 from src.utils.tools import ToolUse
-from src.utils.trip import Budget, Day, Option, Trip
+from src.utils.trip import Budget, Day, Option, ReviewPin, Trip
 
 type CardStatus = Literal["open", "approved", "replaced"]
 
@@ -22,6 +22,7 @@ class PlanCard(TypedDict):
     picked: Picked
     days: list[Day]
     budget: Budget
+    reviewPins: NotRequired[list[ReviewPin]]
 
 
 class Pill(TypedDict):

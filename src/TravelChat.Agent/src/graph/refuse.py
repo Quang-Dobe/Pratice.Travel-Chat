@@ -9,8 +9,8 @@ from src.graph.state import PlannerState
 from src.utils.messages import final_message
 
 REFUSAL = (
-    "I can only help with travel and weather. If you are planning a trip or want to know "
-    "the weather somewhere, tell me where you are heading and I will help."
+    "Thanks for asking! I can only help with travel and weather. If you are planning a trip "
+    "or want to know the weather somewhere, tell me where you are heading and I will gladly help."
 )
 
 

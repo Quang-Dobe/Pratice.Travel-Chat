@@ -60,11 +60,46 @@ export type ToolCall = z.infer<typeof ToolCall>;
 
 export const NO_FORECAST = 'no forecast available yet';
 
+const Latitude = z.number().min(-90).max(90);
+const Longitude = z.number().min(-180).max(180);
+
+export const Airport = z.object({
+  code: z.string(),
+  name: z.string(),
+  lat: Latitude.nullable().default(null),
+  lon: Longitude.nullable().default(null),
+});
+export type Airport = z.infer<typeof Airport>;
+
+export const Leg = z.object({
+  from: Airport,
+  to: Airport,
+  departs: z.string(),
+  arrives: z.string(),
+});
+export type Leg = z.infer<typeof Leg>;
+
+export const GeoPoint = z.object({ lat: Latitude, lon: Longitude });
+export type GeoPoint = z.infer<typeof GeoPoint>;
+
+export const Stop = z.object({ name: z.string(), lat: Latitude, lon: Longitude });
+export type Stop = z.infer<typeof Stop>;
+
+export const ReviewPin = z.object({
+  name: z.string(),
+  kind: z.enum(['restaurant', 'place']),
+  lat: Latitude,
+  lon: Longitude,
+});
+export type ReviewPin = z.infer<typeof ReviewPin>;
+
 export const Option = z.object({
   id: z.string(),
   summary: z.string(),
   priceUsd: z.number(),
   deepLink: z.string().refine(isHttpsUrl, 'deepLink must be an https URL'),
+  legs: z.array(Leg).default([]),
+  location: GeoPoint.nullable().default(null),
 });
 export type Option = z.infer<typeof Option>;
 
@@ -76,6 +111,7 @@ export const PlanDay = z.object({
   activities: z.array(z.string()).default([]),
   weather: z.string().default(NO_FORECAST),
   costUsd: z.number().default(0),
+  stops: z.array(Stop).default([]),
 });
 export type PlanDay = z.infer<typeof PlanDay>;
 
@@ -97,6 +133,7 @@ export const PlanCard = z.object({
   picked: Picked,
   days: z.array(PlanDay),
   budget: PlanBudget,
+  reviewPins: z.array(ReviewPin).default([]),
 });
 export type PlanCard = z.infer<typeof PlanCard>;
 
@@ -110,25 +147,64 @@ export type Action =
   | { type: 'approve'; cardId: string; flightId: string; hotelId: string }
   | { type: 'reject'; cardId: string };
 
-export const Message = z.object({
+const MAX_SOURCE_LINKS = 3;
+const EXPORT_URL_PREFIX = '/api/conversations/';
+
+export const SourceLink = z.object({ title: z.string(), url: z.string() });
+export type SourceLink = z.infer<typeof SourceLink>;
+
+export const SourceItem = z.object({
+  subject: z.string(),
+  links: z
+    .array(SourceLink)
+    .default([])
+    .transform((links) => links.filter((link) => isHttpsUrl(link.url)).slice(0, MAX_SOURCE_LINKS)),
+});
+export type SourceItem = z.infer<typeof SourceItem>;
+
+const SourceList = z
+  .array(SourceItem)
+  .default([])
+  .transform((items) => items.filter((item) => item.links.length > 0));
+
+export const ArtifactItem = z.object({
+  id: z.string(),
+  format: z.enum(['html', 'docx', 'xlsx', 'csv']),
+  fileName: z.string(),
+  url: z
+    .string()
+    .refine((value) => value.startsWith(EXPORT_URL_PREFIX), 'url must be an export path'),
+  draft: z.boolean().default(false),
+});
+export type ArtifactItem = z.infer<typeof ArtifactItem>;
+
+const MessageSchema = z.object({
   role: z.enum(['user', 'assistant']),
   text: z.string(),
   toolCalls: z.array(ToolCall).default([]),
   planCard: PlanCard.nullable().default(null),
   pills: z.array(Pill).default([]),
+  sources: SourceList,
+  artifacts: z.array(ArtifactItem).default([]),
 });
-export type Message = z.infer<typeof Message>;
+export type Message = Omit<z.infer<typeof MessageSchema>, 'sources' | 'artifacts'> & {
+  sources?: SourceItem[];
+  artifacts?: ArtifactItem[];
+};
 
-export const Conversation = ConversationItem.extend({
-  messages: z.array(Message),
-});
-export type Conversation = z.infer<typeof Conversation>;
+export type Conversation = ConversationItem & { messages: Message[] };
+const ConversationSchema = ConversationItem.extend({ messages: z.array(MessageSchema) });
 
 const TokenData = z.object({ text: z.string() });
+const SourcesData = z.object({ items: SourceList });
 const DoneData = z.object({});
 const ToolCallData = z.object({ kind: z.string(), name: z.string(), status: ToolStatus });
 const PillsData = z.object({ items: z.array(Pill) });
 const NoticeData = z.object({ message: z.string() });
+const MapPinsData = z.object({ cardId: z.string(), pins: z.array(ReviewPin) });
+
+const AppConfig = z.object({ googleMapsApiKey: z.string().default('') });
+export type AppConfig = z.infer<typeof AppConfig>;
 
 export type StreamEvent =
   | { type: 'token'; text: string }
@@ -136,6 +212,9 @@ export type StreamEvent =
   | { type: 'plan_card'; card: PlanCard }
   | { type: 'pills'; items: Pill[] }
   | { type: 'notice'; message: string }
+  | { type: 'map_pins'; cardId: string; pins: ReviewPin[] }
+  | { type: 'sources'; items: SourceItem[] }
+  | { type: 'artifact'; artifact: ArtifactItem }
   | { type: 'done' };
 
 export type AppData = {
@@ -158,6 +237,27 @@ export async function apiFetch(path: string, init?: RequestInit): Promise<Respon
 export async function getMe(): Promise<Me> {
   const response = await apiFetch('/api/users/me');
   return Me.parse(await response.json());
+}
+
+let configPromise: Promise<AppConfig> | null = null;
+
+async function fetchConfig(): Promise<AppConfig> {
+  try {
+    const response = await fetch(new URL('/config.json', window.location.origin), {
+      credentials: 'same-origin',
+    });
+    if (!response.ok) {
+      return { googleMapsApiKey: '' };
+    }
+    return AppConfig.parse(await response.json());
+  } catch {
+    return { googleMapsApiKey: '' };
+  }
+}
+
+export function getConfig(): Promise<AppConfig> {
+  configPromise ??= fetchConfig();
+  return configPromise;
 }
 
 export async function listConversations(): Promise<ConversationItem[]> {
@@ -190,10 +290,25 @@ export async function createConversation(text: string): Promise<ConversationItem
 
 export async function getConversation(id: string): Promise<Conversation> {
   const response = await apiFetch(`/api/conversations/${encodeURIComponent(id)}`);
-  return Conversation.parse(await response.json());
+  return ConversationSchema.parse(await response.json());
 }
 
-function toStreamEvent(event: string, data: string): StreamEvent {
+const KNOWN_EVENTS = new Set([
+  'token',
+  'tool_call',
+  'plan_card',
+  'pills',
+  'notice',
+  'map_pins',
+  'sources',
+  'artifact',
+  'done',
+]);
+
+function toStreamEvent(event: string, data: string): StreamEvent | null {
+  if (!KNOWN_EVENTS.has(event)) {
+    return null;
+  }
   const payload: unknown = JSON.parse(data);
   switch (event) {
     case 'token':
@@ -206,11 +321,17 @@ function toStreamEvent(event: string, data: string): StreamEvent {
       return { type: 'pills', items: PillsData.parse(payload).items };
     case 'notice':
       return { type: 'notice', message: NoticeData.parse(payload).message };
+    case 'map_pins':
+      return { type: 'map_pins', ...MapPinsData.parse(payload) };
+    case 'sources':
+      return { type: 'sources', items: SourcesData.parse(payload).items };
+    case 'artifact':
+      return { type: 'artifact', artifact: ArtifactItem.parse(payload) };
     case 'done':
       DoneData.parse(payload);
       return { type: 'done' };
     default:
-      throw new Error(`Unknown stream event: ${event}`);
+      return null;
   }
 }
 

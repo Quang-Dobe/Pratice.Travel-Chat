@@ -33,6 +33,34 @@ public sealed class FlightsServiceTests
         }
         """;
 
+    private const string LegsBody = """
+        {
+          "search_metadata": { "google_flights_url": "https://www.google.com/travel/flights?q=abc" },
+          "best_flights": [
+            {
+              "flights": [
+                { "departure_airport": { "id": "HND", "name": "Tokyo Haneda", "time": "2026-12-01 08:10" }, "arrival_airport": { "id": "SIN", "name": "Changi", "time": "2026-12-01 14:25" } }
+              ],
+              "price": 500, "booking_token": "a"
+            },
+            {
+              "flights": [
+                { "departure_airport": { "id": "HND", "name": "Tokyo Haneda", "time": "2026-12-01 08:00" }, "arrival_airport": { "id": "BKK", "name": "Suvarnabhumi", "time": "2026-12-01 12:00" } },
+                { "departure_airport": { "id": "BKK", "name": "Suvarnabhumi", "time": "2026-12-01 13:00" }, "arrival_airport": { "id": "SIN", "name": "Changi", "time": "2026-12-01 20:00" } }
+              ],
+              "price": 400, "booking_token": "b"
+            },
+            {
+              "flights": [
+                { "departure_airport": { "id": "HND", "name": "Tokyo Haneda", "time": "2026-12-01 08:00" }, "arrival_airport": { "id": "BKK", "name": "Suvarnabhumi", "time": "2026-12-01 12:00" } },
+                { "departure_airport": { "id": "BKK", "name": "Suvarnabhumi" }, "arrival_airport": { "id": "SIN", "name": "Changi", "time": "2026-12-01 20:00" } }
+              ],
+              "price": 300, "booking_token": "c"
+            }
+          ]
+        }
+        """;
+
     private static readonly Dictionary<string, string?> s_withKey = new() { ["ProviderKeys:flights:serpapi"] = "secret" };
 
     private static readonly DateOnly s_depart = new(2026, 12, 1);
@@ -58,6 +86,40 @@ public sealed class FlightsServiceTests
         options[1].PriceUsd.ShouldBe(987.5m);
         options[1].Summary.ShouldContain("1 stop");
         options[1].Id.ShouldNotBe(options[0].Id);
+    }
+
+    [Fact]
+    public async Task NonstopFlightHasOneLeg()
+    {
+        var legs = await LegsOfAsync(LegsBody);
+
+        legs[0].Count.ShouldBe(1);
+        legs[0][0].ShouldBe(new FlightLeg(
+            new Airport("HND", "Tokyo Haneda", null, null),
+            new Airport("SIN", "Changi", null, null),
+            "2026-12-01 08:10",
+            "2026-12-01 14:25"));
+    }
+
+    [Fact]
+    public async Task OneStopFlightHasTwoLegsWithTheirOwnTimes()
+    {
+        var legs = await LegsOfAsync(LegsBody);
+
+        legs[1].Count.ShouldBe(2);
+        legs[1][0].To.Code.ShouldBe("BKK");
+        legs[1][0].Arrives.ShouldBe("2026-12-01 12:00");
+        legs[1][1].From.Code.ShouldBe("BKK");
+        legs[1][1].Departs.ShouldBe("2026-12-01 13:00");
+        legs[1][1].Arrives.ShouldBe("2026-12-01 20:00");
+    }
+
+    [Fact]
+    public async Task IncompleteLegEmptiesAllLegs()
+    {
+        var legs = await LegsOfAsync(LegsBody);
+
+        legs[2].ShouldBeEmpty();
     }
 
     [Fact]
@@ -150,6 +212,17 @@ public sealed class FlightsServiceTests
         var result = await service.SearchAsync("SGN", "AMS", s_depart, s_return, 1, ct);
 
         result.Status.ShouldBe(ProviderStatus.Error);
+    }
+
+    private static async Task<IReadOnlyList<FlightLeg>[]> LegsOfAsync(string body)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var rig = new CacheRig(s_withKey);
+        var service = new FlightsService(new StubHttpClientFactory(new StubHandler(_ => StubHandler.Json(body))), rig.Fetch);
+
+        var result = await service.SearchAsync("HND", "SIN", s_depart, s_return, 1, ct);
+
+        return [.. result.Data.ShouldNotBeNull().Select(static option => option.Legs)];
     }
 
     [Fact]

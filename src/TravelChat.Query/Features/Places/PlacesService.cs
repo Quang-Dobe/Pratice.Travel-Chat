@@ -13,6 +13,7 @@ public sealed class PlacesService(IHttpClientFactory httpClients, CachedFetch ca
     private const string PlacesUrl = "https://api.geoapify.com/v2/places";
     private const int RadiusMetres = 10000;
     private const int MaxResults = 20;
+    private const string CacheVersion = "v2";
 
     private static readonly TimeSpan s_ttl = TimeSpan.FromHours(24);
 
@@ -52,7 +53,7 @@ public sealed class PlacesService(IHttpClientFactory httpClients, CachedFetch ca
         CancellationToken ct)
     {
         var categories = CategoriesFor(interests);
-        var query = $"{CachedFetch.Normalise(city)}|{string.Join(',', categories)}";
+        var query = $"{CacheVersion}|{CachedFetch.Normalise(city)}|{string.Join(',', categories)}";
         return await cachedFetch.GetAsync(
             ClientName,
             query,
@@ -108,7 +109,8 @@ public sealed class PlacesService(IHttpClientFactory httpClients, CachedFetch ca
                 continue;
             }
 
-            attractions.Add(new Attraction(name, FirstCategory(properties)));
+            var (lat, lon) = ReadCoordinates(properties);
+            attractions.Add(new Attraction(name, FirstCategory(properties), lat, lon));
             if (attractions.Count == MaxResults)
             {
                 break;
@@ -116,6 +118,24 @@ public sealed class PlacesService(IHttpClientFactory httpClients, CachedFetch ca
         }
 
         return attractions;
+    }
+
+    private static (double? Lat, double? Lon) ReadCoordinates(JsonElement properties)
+    {
+        if (properties.TryGetProperty("lat", out var latitude)
+            && latitude.ValueKind == JsonValueKind.Number
+            && properties.TryGetProperty("lon", out var longitude)
+            && longitude.ValueKind == JsonValueKind.Number)
+        {
+            var lat = latitude.GetDouble();
+            var lon = longitude.GetDouble();
+            if (lat is >= -90 and <= 90 && lon is >= -180 and <= 180)
+            {
+                return (lat, lon);
+            }
+        }
+
+        return (null, null);
     }
 
     private static string FirstCategory(JsonElement properties)

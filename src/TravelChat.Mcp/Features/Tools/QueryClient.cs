@@ -62,6 +62,15 @@ public sealed class QueryClient(HttpClient http)
             ],
             ct);
 
+    public Task<QueryEnvelope> GeocodeAsync(IReadOnlyList<string> places, CancellationToken ct) =>
+        GetAsync("geocode/places", places.Select(p => ("place", p)), ct);
+
+    public Task<QueryEnvelope> SearchWebAsync(string query, CancellationToken ct) =>
+        GetAsync("search/web", [("q", query)], ct);
+
+    public Task<QueryEnvelope> FetchPageAsync(string url, CancellationToken ct) =>
+        GetAsync("fetch/page", [("url", url)], ct);
+
     private static async Task<QueryEnvelope> ReadInvalidAsync(HttpResponseMessage response, CancellationToken ct)
     {
         try

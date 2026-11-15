@@ -1,5 +1,6 @@
 import json
-from collections.abc import Sequence
+import math
+from collections.abc import Mapping, Sequence
 from typing import Any
 from uuid import uuid4
 
@@ -8,13 +9,18 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from src.providers.base import ChatProvider
 from src.settings import Tier
 from src.utils.tools import RawCall, ToolUse
-from src.utils.trip import Option
+from src.utils.trip import Airport, Leg, Location, Option
 
+MAX_LATITUDE = 90.0
+MAX_LONGITUDE = 180.0
+MAX_LEGS = 8
 HISTORY_LIMIT = 6
 HISTORY_TEXT_LIMIT = 600
 CHAT_HISTORY_LIMIT = 12
 TURN_TOOLS = "turn_tools"
 CARD_ID = "card_id"
+SOURCES = "sources"
+ARTIFACTS = "artifacts"
 ACTION = "action"
 
 
@@ -88,10 +94,87 @@ def parse_options(text: str) -> list[Option]:
         if not isinstance(link, str) or not link.startswith("https://"):
             continue
         seen.add(option_id)
-        options.append(
-            Option(id=option_id, summary=summary, priceUsd=round(float(price), 2), deepLink=link)
+        option = Option(
+            id=option_id, summary=summary, priceUsd=round(float(price), 2), deepLink=link
         )
+        if legs := parse_legs(item.get("legs")):
+            option["legs"] = legs
+        if (location := parse_location(item.get("location"))) is not None:
+            option["location"] = location
+        options.append(option)
     return options
+
+
+def _number(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return float(value) if math.isfinite(value) else None
+
+
+def _coordinate(value: object, limit: float) -> float | None:
+    number = _number(value)
+    return number if number is not None and -limit <= number <= limit else None
+
+
+def latitude(value: object) -> float | None:
+    return _coordinate(value, MAX_LATITUDE)
+
+
+def longitude(value: object) -> float | None:
+    return _coordinate(value, MAX_LONGITUDE)
+
+
+def parse_location(value: object) -> Location | None:
+    if not isinstance(value, dict):
+        return None
+    lat = latitude(value.get("lat"))
+    lon = longitude(value.get("lon"))
+    if lat is None or lon is None:
+        return None
+    return Location(lat=lat, lon=lon)
+
+
+def _airport(value: object) -> Airport | None:
+    if not isinstance(value, dict):
+        return None
+    code = value.get("code")
+    name = value.get("name")
+    if not isinstance(code, str) or not code.strip() or not isinstance(name, str):
+        return None
+    return Airport(
+        code=code.strip(),
+        name=name.strip(),
+        lat=latitude(value.get("lat")),
+        lon=longitude(value.get("lon")),
+    )
+
+
+def _leg(value: object) -> Leg | None:
+    if not isinstance(value, dict):
+        return None
+    start = _airport(value.get("from"))
+    end = _airport(value.get("to"))
+    departs = value.get("departs")
+    arrives = value.get("arrives")
+    if start is None or end is None:
+        return None
+    if not isinstance(departs, str) or not departs.strip():
+        return None
+    if not isinstance(arrives, str) or not arrives.strip():
+        return None
+    return Leg(**{"from": start, "to": end, "departs": departs.strip(), "arrives": arrives.strip()})
+
+
+def parse_legs(value: object) -> list[Leg]:
+    if not isinstance(value, list) or len(value) > MAX_LEGS:
+        return []
+    legs: list[Leg] = []
+    for item in value:
+        leg = _leg(item)
+        if leg is None:
+            return []
+        legs.append(leg)
+    return legs
 
 
 def tool_text(calls: Sequence[RawCall], name: str) -> str:
@@ -102,11 +185,20 @@ def tool_text(calls: Sequence[RawCall], name: str) -> str:
 
 
 def final_message(
-    text: str, message_id: str | None, uses: Sequence[ToolUse], card_id: str | None = None
+    text: str,
+    message_id: str | None,
+    uses: Sequence[ToolUse],
+    card_id: str | None = None,
+    sources: Sequence[Mapping[str, Any]] | None = None,
+    artifacts: Sequence[Mapping[str, Any]] | None = None,
 ) -> AIMessage:
     kwargs: dict[str, Any] = {TURN_TOOLS: [dict(use) for use in uses]}
     if card_id is not None:
         kwargs[CARD_ID] = card_id
+    if sources:
+        kwargs[SOURCES] = [dict(item) for item in sources]
+    if artifacts:
+        kwargs[ARTIFACTS] = [dict(item) for item in artifacts]
     return AIMessage(text, id=message_id or str(uuid4()), additional_kwargs=kwargs)
 
 

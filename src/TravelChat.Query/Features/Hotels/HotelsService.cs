@@ -12,6 +12,7 @@ public sealed class HotelsService(IHttpClientFactory httpClients, CachedFetch ca
 
     private const string SearchUrl = "https://serpapi.com/search.json";
     private const int MaxOptions = 5;
+    private const string CacheVersion = "v2";
 
     private static readonly TimeSpan s_ttl = TimeSpan.FromHours(6);
 
@@ -24,6 +25,7 @@ public sealed class HotelsService(IHttpClientFactory httpClients, CachedFetch ca
     {
         var query = string.Join(
             '|',
+            CacheVersion,
             CachedFetch.Normalise(city),
             CachedFetch.Normalise(checkIn),
             CachedFetch.Normalise(checkOut),
@@ -84,7 +86,24 @@ public sealed class HotelsService(IHttpClientFactory httpClients, CachedFetch ca
         }
 
         var token = property.OptionalString("property_token") ?? link;
-        return new HotelOption(ShortHash(token), Summarise(property, name), price.Value, link);
+        return new HotelOption(ShortHash(token), Summarise(property, name), price.Value, link, ReadLocation(property));
+    }
+
+    private static HotelLocation? ReadLocation(JsonElement property)
+    {
+        if (!property.TryGetProperty("gps_coordinates", out var gps)
+            || gps.ValueKind != JsonValueKind.Object
+            || !gps.TryGetProperty("latitude", out var latitude)
+            || latitude.ValueKind != JsonValueKind.Number
+            || !gps.TryGetProperty("longitude", out var longitude)
+            || longitude.ValueKind != JsonValueKind.Number)
+        {
+            return null;
+        }
+
+        var lat = latitude.GetDouble();
+        var lon = longitude.GetDouble();
+        return lat is >= -90 and <= 90 && lon is >= -180 and <= 180 ? new HotelLocation(lat, lon) : null;
     }
 
     private static decimal? StayTotal(JsonElement property, int nights)

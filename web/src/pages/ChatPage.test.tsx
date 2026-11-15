@@ -37,7 +37,9 @@ function gatedStream(first: Uint8Array, rest: Uint8Array[]) {
   return { body, release };
 }
 
-const server = setupServer();
+const server = setupServer(
+  http.get('*/config.json', () => HttpResponse.json({ googleMapsApiKey: '' })),
+);
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
 afterEach(() => {
@@ -105,15 +107,44 @@ function makeCard(overrides: Partial<PlanCard> = {}): PlanCard {
     id: 'card1',
     status: 'open',
     flights: [
-      { id: 'f1', summary: 'Flight one', priceUsd: 500, deepLink: 'https://example.com/f1' },
-      { id: 'f2', summary: 'Flight two', priceUsd: 650, deepLink: 'https://example.com/f2' },
+      {
+        id: 'f1',
+        summary: 'Flight one',
+        priceUsd: 500,
+        deepLink: 'https://example.com/f1',
+        legs: [],
+        location: null,
+      },
+      {
+        id: 'f2',
+        summary: 'Flight two',
+        priceUsd: 650,
+        deepLink: 'https://example.com/f2',
+        legs: [],
+        location: null,
+      },
     ],
     hotels: [
-      { id: 'h1', summary: 'Hotel one', priceUsd: 300, deepLink: 'https://example.com/h1' },
-      { id: 'h2', summary: 'Hotel two', priceUsd: 700, deepLink: 'https://example.com/h2' },
+      {
+        id: 'h1',
+        summary: 'Hotel one',
+        priceUsd: 300,
+        deepLink: 'https://example.com/h1',
+        legs: [],
+        location: null,
+      },
+      {
+        id: 'h2',
+        summary: 'Hotel two',
+        priceUsd: 700,
+        deepLink: 'https://example.com/h2',
+        legs: [],
+        location: null,
+      },
     ],
     picked: { flightId: 'f1', hotelId: 'h1' },
-    days: [{ date: '2026-11-01', activities: ['Temple'], weather: '18C', costUsd: 90 }],
+    days: [{ date: '2026-11-01', activities: ['Temple'], weather: '18C', costUsd: 90, stops: [] }],
+    reviewPins: [],
     budget: {
       flightUsd: 500,
       hotelUsd: 300,
@@ -302,8 +333,83 @@ describe('ChatPage plan card', () => {
     renderChat('/c/c1');
 
     const card = await screen.findByRole('group', { name: 'Plan card' });
-    expect(within(card).getByRole('alert')).toHaveTextContent(/over budget/i);
+    expect(within(card).getByText('This plan is over budget.')).toBeInTheDocument();
     expect(within(card).getByText('Total $1,290.00 of $600.00 budget')).toBeInTheDocument();
+  });
+
+  it('applies map_pins to the card with that id and ignores other ids', async () => {
+    const { body, release } = gatedStream(
+      Uint8Array.from([
+        ...frame('map_pins', {
+          cardId: 'card1',
+          pins: [{ name: 'Ramen Bar', kind: 'restaurant', lat: 35.68, lon: 139.76 }],
+        }),
+        ...frame('map_pins', {
+          cardId: 'other',
+          pins: [{ name: 'Ghost Cafe', kind: 'place', lat: 1, lon: 1 }],
+        }),
+      ]),
+      [frame('token', { text: 'More pins' }), frame('done', {})],
+    );
+    server.use(
+      http.get('*/api/conversations/c1', () => HttpResponse.json(withCard(makeCard()))),
+      http.post(
+        '*/api/conversations/c1/messages',
+        () => new HttpResponse(body, { headers: { 'Content-Type': 'text/event-stream' } }),
+      ),
+      http.get('*/api/conversations', () => HttpResponse.json({ items: [] })),
+    );
+    renderChat('/c/c1');
+    await screen.findByRole('group', { name: 'Plan card' });
+    expect(screen.queryByRole('list', { name: 'Map points' })).not.toBeInTheDocument();
+
+    await userEvent.type(screen.getByLabelText('Message'), 'Show restaurants');
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    const points = await screen.findByRole('list', { name: 'Map points' });
+    expect(within(points).getAllByRole('listitem')).toHaveLength(1);
+    expect(within(points).getByText('Restaurant: Ramen Bar')).toBeInTheDocument();
+    expect(screen.queryByText('Place: Ghost Cafe')).not.toBeInTheDocument();
+
+    release();
+    await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
+  });
+
+  it('draws the map only on the latest card', async () => {
+    const withPin = (id: string) =>
+      makeCard({
+        id,
+        reviewPins: [{ name: `Pin ${id}`, kind: 'place', lat: 1, lon: 1 }],
+      });
+    server.use(
+      http.get('*/api/conversations/c1', () =>
+        HttpResponse.json({
+          ...savedConversation,
+          messages: [
+            { role: 'user', text: 'Plan it', toolCalls: [], planCard: null, pills: [] },
+            {
+              role: 'assistant',
+              text: 'First plan',
+              toolCalls: [],
+              planCard: { ...withPin('old'), status: 'replaced' },
+              pills: [],
+            },
+            {
+              role: 'assistant',
+              text: 'Second plan',
+              toolCalls: [],
+              planCard: withPin('new'),
+              pills: [],
+            },
+          ],
+        }),
+      ),
+    );
+    renderChat('/c/c1');
+
+    const lists = await screen.findAllByRole('list', { name: 'Map points' });
+    expect(lists).toHaveLength(1);
+    expect(within(lists[0] as HTMLElement).getByText('Place: Pin new')).toBeInTheDocument();
   });
 
   it('renders a streamed plan card, then marks the earlier card replaced after done', async () => {

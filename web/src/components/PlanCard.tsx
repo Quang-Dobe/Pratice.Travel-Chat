@@ -1,3 +1,7 @@
+import EventRounded from '@mui/icons-material/EventRounded';
+import FlightRounded from '@mui/icons-material/FlightRounded';
+import HotelRounded from '@mui/icons-material/HotelRounded';
+import SavingsRounded from '@mui/icons-material/SavingsRounded';
 import {
   Alert,
   Box,
@@ -11,7 +15,9 @@ import {
   Stack,
   Typography,
 } from '@mui/material';
+import type { ReactNode } from 'react';
 import { NO_FORECAST, type Option, type Picked, type PlanCard as PlanCardData } from '../api/api';
+import { PlanMap } from './PlanMap';
 
 const usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
 
@@ -19,24 +25,38 @@ function priceOf(options: Option[], id: string): number {
   return options.find((option) => option.id === id)?.priceUsd ?? 0;
 }
 
+type SectionHeadingProps = { icon: ReactNode; children: ReactNode };
+
+function SectionHeading({ icon, children }: SectionHeadingProps) {
+  return (
+    <Stack direction="row" sx={{ alignItems: 'center', gap: 1, color: 'primary.main' }}>
+      <Box aria-hidden sx={{ display: 'flex' }}>
+        {icon}
+      </Box>
+      <Typography variant="subtitle2" component="h4" sx={{ color: 'text.primary' }}>
+        {children}
+      </Typography>
+    </Stack>
+  );
+}
+
 type OptionListProps = {
   label: string;
   heading: string;
+  icon: ReactNode;
   options: Option[];
   value: string;
   disabled: boolean;
   onChange: (id: string) => void;
 };
 
-function OptionList({ label, heading, options, value, disabled, onChange }: OptionListProps) {
+function OptionList({ label, heading, icon, options, value, disabled, onChange }: OptionListProps) {
   if (options.length === 0) {
     return null;
   }
   return (
     <Box>
-      <Typography variant="subtitle2" component="h4">
-        {heading}
-      </Typography>
+      <SectionHeading icon={icon}>{heading}</SectionHeading>
       <RadioGroup
         aria-label={label}
         value={value}
@@ -78,10 +98,11 @@ type PlanCardProps = {
   card: PlanCardData;
   picked: Picked;
   interactive: boolean;
+  showMap?: boolean;
   onPick: (picked: Picked) => void;
 };
 
-export function PlanCard({ card, picked, interactive, onPick }: PlanCardProps) {
+export function PlanCard({ card, picked, interactive, showMap = false, onPick }: PlanCardProps) {
   const { status, budget } = card;
   const open = status === 'open';
   const flightUsd = priceOf(card.flights, picked.flightId);
@@ -95,7 +116,7 @@ export function PlanCard({ card, picked, interactive, onPick }: PlanCardProps) {
       variant="outlined"
       role="group"
       aria-label="Plan card"
-      sx={{ mt: 1.5, p: 1.5, borderRadius: 2, opacity: status === 'replaced' ? 0.6 : 1 }}
+      sx={{ mt: 2, p: 2.5, borderRadius: 4, opacity: status === 'replaced' ? 0.6 : 1 }}
     >
       <Stack direction="row" sx={{ alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
         <Typography variant="subtitle2" component="h3">
@@ -105,10 +126,11 @@ export function PlanCard({ card, picked, interactive, onPick }: PlanCardProps) {
         {status === 'replaced' && <Chip size="small" label="Replaced" />}
       </Stack>
 
-      <Stack spacing={1.5}>
+      <Stack spacing={2.5}>
         <OptionList
           label="Flight options"
           heading="Flights"
+          icon={<FlightRounded fontSize="small" />}
           options={card.flights}
           value={picked.flightId}
           disabled={!interactive}
@@ -117,18 +139,21 @@ export function PlanCard({ card, picked, interactive, onPick }: PlanCardProps) {
         <OptionList
           label="Hotel options"
           heading="Hotels"
+          icon={<HotelRounded fontSize="small" />}
           options={card.hotels}
           value={picked.hotelId}
           disabled={!interactive}
           onChange={(hotelId) => onPick({ ...picked, hotelId })}
         />
 
+        {showMap && (
+          <PlanMap card={card} pickedFlightId={picked.flightId} pickedHotelId={picked.hotelId} />
+        )}
+
         {card.days.map((day) => (
           <Box key={day.date} component="section" aria-label={`Day ${day.date}`}>
             <Stack direction="row" sx={{ justifyContent: 'space-between', gap: 2 }}>
-              <Typography variant="subtitle2" component="h4">
-                {day.date}
-              </Typography>
+              <SectionHeading icon={<EventRounded fontSize="small" />}>{day.date}</SectionHeading>
               <Typography variant="body2" component="span">
                 {usd.format(day.costUsd)}
               </Typography>
@@ -151,11 +176,11 @@ export function PlanCard({ card, picked, interactive, onPick }: PlanCardProps) {
 
         <Divider />
         <Box component="section" aria-label="Budget">
-          <Typography variant="subtitle2" component="h4">
+          <SectionHeading icon={<SavingsRounded fontSize="small" />}>
             {limit === null
               ? `Estimated total ${usd.format(totalUsd)}`
               : `Total ${usd.format(totalUsd)} of ${usd.format(limit)} budget`}
-          </Typography>
+          </SectionHeading>
           <Stack direction="row" sx={{ gap: 2, flexWrap: 'wrap', mt: 0.5 }}>
             <Typography variant="body2" component="span">
               {`Flight ${usd.format(flightUsd)}`}

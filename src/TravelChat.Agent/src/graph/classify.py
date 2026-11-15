@@ -41,8 +41,11 @@ change is still plan: the planner rebuilds the card. When <last_assistant_messag
 budget should go, a reply that names a part of the trip (the hotel, the flights, things to do, or \
 places) is plan.
 answer for questions, suggestions, and recommendations such as food spots, attractions, things to \
-do, or tips, and for weather questions. Earlier planning turns do not make a question a planning \
-request.
+do, or tips, and for weather questions. Also answer for review questions, such as what people say \
+about a hotel, flight, restaurant, or place, and for a request to get the plan as a file (html, \
+docx, excel, or csv). A review question stays answer even when it names an airline, a route, an \
+origin or destination, or dates, because asking what people say does not change the trip. Earlier \
+planning turns do not make a question a planning request.
 </route>
 
 <examples>
@@ -58,6 +61,12 @@ Assistant asked where the extra budget should go; user: "mostly the flights" -> 
 "Where should we eat there?" -> answer
 "Is it rainy in May?" -> answer
 "What museums are worth seeing?" -> answer
+"What do people say about Hotel Gracery?" -> answer
+"Any good reviews for that ramen place?" -> answer
+"What do people say about ANA flights from Hanoi to Osaka?" -> answer
+"Find reviews of Vietjet on the Bangkok route" -> answer
+"Send me the plan as a docx" -> answer
+"Export it to excel" -> answer
 </examples>
 """
 

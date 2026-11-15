@@ -4,21 +4,23 @@ from datetime import datetime
 from typing import Annotated, Any, Literal, Self, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langgraph.types import StreamMode
-from pydantic import BaseModel, ConfigDict, StringConstraints, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 from pydantic.alias_generators import to_camel
 
 from src.auth import CurrentUser, CurrentUserDep
 from src.conversations import repository
 from src.conversations.repository import ConversationRow
 from src.conversations.title import make_title
+from src.exports import repository as exports_repository
+from src.exports.render import content_type
 from src.graph.builder import ChatGraph, thread_config
 from src.graph.deps import PlannerDeps
 from src.graph.state import Pill, PlanCard, PlannerState, card_payload
-from src.utils.messages import ACTION, TURN_TOOLS
+from src.utils.messages import ACTION, ARTIFACTS, SOURCES, TURN_TOOLS
 from src.utils.tools import tool_kind
 from src.utils.usage import tracing_callbacks
 
@@ -29,7 +31,13 @@ router = APIRouter(prefix="/conversations", tags=["conversations"])
 STREAM_MODES: list[StreamMode] = ["messages", "custom"]
 TOKEN_NODES = frozenset({"answer", "ask_missing", "ask_change", "ask_budget"})
 PARAGRAPH_BREAK = "\n\n"
-FORWARDED_EVENTS = frozenset({"tool_call", "plan_card", "pills", "notice"})
+FORWARDED_EVENTS = frozenset(
+    {"tool_call", "plan_card", "pills", "notice", "sources", "map_pins", "artifact"}
+)
+EXPORT_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "Cache-Control": "private, no-store",
+}
 NOT_CONFIGURED = "The AI model is not configured."
 UNAVAILABLE = "The AI model is unavailable right now."
 
@@ -86,11 +94,45 @@ class ToolCallItem(ApiModel):
     kind: str
 
 
+class AirportItem(ApiModel):
+    code: str
+    name: str
+    lat: float | None = None
+    lon: float | None = None
+
+
+class LegItem(ApiModel):
+    from_: AirportItem = Field(alias="from")
+    to: AirportItem
+    departs: str
+    arrives: str
+
+
+class LocationItem(ApiModel):
+    lat: float
+    lon: float
+
+
+class StopItem(ApiModel):
+    name: str
+    lat: float
+    lon: float
+
+
+class ReviewPinItem(ApiModel):
+    name: str
+    kind: Literal["restaurant", "place"]
+    lat: float
+    lon: float
+
+
 class OptionItem(ApiModel):
     id: str
     summary: str
     price_usd: float
     deep_link: str
+    legs: list[LegItem] = []
+    location: LocationItem | None = None
 
 
 class PickedItem(ApiModel):
@@ -103,6 +145,7 @@ class DayItem(ApiModel):
     activities: list[str]
     weather: str
     cost_usd: float
+    stops: list[StopItem] = []
 
 
 class BudgetItem(ApiModel):
@@ -122,11 +165,30 @@ class PlanCardItem(ApiModel):
     picked: PickedItem
     days: list[DayItem]
     budget: BudgetItem
+    review_pins: list[ReviewPinItem] = []
 
 
 class PillItem(ApiModel):
     text: str
     action: str | None
+
+
+class SourceLinkItem(ApiModel):
+    title: str
+    url: str
+
+
+class SourceItem(ApiModel):
+    subject: str
+    links: list[SourceLinkItem]
+
+
+class ArtifactItem(ApiModel):
+    id: str
+    format: Literal["html", "docx", "xlsx", "csv"]
+    file_name: str
+    url: str
+    draft: bool
 
 
 class MessageItem(ApiModel):
@@ -135,6 +197,8 @@ class MessageItem(ApiModel):
     tool_calls: list[ToolCallItem] = []
     plan_card: PlanCardItem | None = None
     pills: list[PillItem] = []
+    sources: list[SourceItem] = []
+    artifacts: list[ArtifactItem] = []
 
 
 class ConversationDetail(ConversationItem):
@@ -149,6 +213,16 @@ def _tool_calls(message: AIMessage) -> list[ToolCallItem]:
     recorded = message.additional_kwargs.get(TURN_TOOLS) or []
     names = [str(call["name"]) for call in recorded]
     return [ToolCallItem(name=name, kind=tool_kind(name)) for name in names]
+
+
+def _sources(message: AIMessage) -> list[SourceItem]:
+    recorded = message.additional_kwargs.get(SOURCES) or []
+    return [SourceItem.model_validate(item) for item in recorded]
+
+
+def _artifacts(message: AIMessage) -> list[ArtifactItem]:
+    recorded = message.additional_kwargs.get(ARTIFACTS) or []
+    return [ArtifactItem.model_validate(item) for item in recorded]
 
 
 def _build_messages(
@@ -168,6 +242,8 @@ def _build_messages(
                     text=message.text,
                     tool_calls=_tool_calls(message),
                     plan_card=plan_card,
+                    sources=_sources(message),
+                    artifacts=_artifacts(message),
                 )
             )
     for index in range(len(items) - 1, -1, -1):
@@ -271,6 +347,27 @@ async def get_conversation(
         snapshot.values.get("pills") or [],
     )
     return ConversationDetail(**_to_item(conversation).model_dump(), messages=messages)
+
+
+@router.get("/{conversation_id}/exports/{export_id}")
+async def download_export(
+    export_id: str, conversation: OwnedConversation, request: Request
+) -> Response:
+    try:
+        parsed_id = UUID(export_id)
+    except ValueError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Export not found") from None
+    row = await exports_repository.get(request.app.state.pool, conversation.id, parsed_id)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Export not found")
+    return Response(
+        content=bytes(row.content),
+        media_type=content_type(row.format),
+        headers={
+            **EXPORT_HEADERS,
+            "Content-Disposition": f'attachment; filename="{row.file_name}"',
+        },
+    )
 
 
 @router.post("/{conversation_id}/messages", response_class=EventSourceResponse)

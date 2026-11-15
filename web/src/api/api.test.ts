@@ -1,6 +1,6 @@
 import { HttpResponse, http } from 'msw';
 import { setupServer } from 'msw/node';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   ApiError,
   getConversation,
@@ -17,8 +17,26 @@ const encoder = new TextEncoder();
 const planCard = {
   id: 'card1',
   status: 'open',
-  flights: [{ id: 'f1', summary: 'Direct', priceUsd: 320.5, deepLink: 'https://example.com/f1' }],
-  hotels: [{ id: 'h1', summary: 'Hotel one', priceUsd: 400, deepLink: 'https://example.com/h1' }],
+  flights: [
+    {
+      id: 'f1',
+      summary: 'Direct',
+      priceUsd: 320.5,
+      deepLink: 'https://example.com/f1',
+      legs: [],
+      location: null,
+    },
+  ],
+  hotels: [
+    {
+      id: 'h1',
+      summary: 'Hotel one',
+      priceUsd: 400,
+      deepLink: 'https://example.com/h1',
+      legs: [],
+      location: null,
+    },
+  ],
   picked: { flightId: 'f1', hotelId: 'h1' },
   days: [
     {
@@ -26,8 +44,10 @@ const planCard = {
       activities: ['Temple'],
       weather: 'no forecast available yet',
       costUsd: 90,
+      stops: [],
     },
   ],
+  reviewPins: [],
   budget: {
     flightUsd: 400,
     hotelUsd: 400,
@@ -143,10 +163,78 @@ describe('parseSseFrames', () => {
     ]);
   });
 
-  it('treats the old approval event as unknown', () => {
-    expect(() =>
-      parseSseFrames('event: approval\ndata: {"id":"a1","stop":"brief","options":[]}\n\n'),
-    ).toThrow('Unknown stream event: approval');
+  it('ignores an unknown event, even with a payload that is not json', () => {
+    const { events } = parseSseFrames(
+      'event: approval\ndata: {"id":"a1","stop":"brief","options":[]}\n\nevent: future\ndata: nope\n\nevent: token\ndata: {"text":"a"}\n\n',
+    );
+
+    expect(events).toEqual([{ type: 'token', text: 'a' }]);
+  });
+
+  it('parses a sources event, keeps https links only and caps them at three', () => {
+    const links = [
+      { title: 'One', url: 'https://example.com/1' },
+      { title: 'Plain', url: 'http://example.com/2' },
+      { title: 'Script', url: 'javascript:alert(1)' },
+      { title: 'Two', url: 'https://example.com/3' },
+      { title: 'Three', url: 'https://example.com/4' },
+      { title: 'Four', url: 'https://example.com/5' },
+    ];
+    const items = [
+      { subject: 'Ramen Bar', links },
+      { subject: 'Only bad', links: [{ title: 'Bad', url: 'http://example.com' }] },
+    ];
+
+    const { events } = parseSseFrames(`event: sources\ndata: ${JSON.stringify({ items })}\n\n`);
+
+    expect(events).toEqual([
+      {
+        type: 'sources',
+        items: [
+          {
+            subject: 'Ramen Bar',
+            links: [
+              { title: 'One', url: 'https://example.com/1' },
+              { title: 'Two', url: 'https://example.com/3' },
+              { title: 'Three', url: 'https://example.com/4' },
+            ],
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('parses an artifact event', () => {
+    const artifact = {
+      id: 'e1',
+      format: 'docx',
+      fileName: 'trip.docx',
+      url: '/api/conversations/c1/exports/e1',
+      draft: true,
+    };
+
+    const { events } = parseSseFrames(`event: artifact\ndata: ${JSON.stringify(artifact)}\n\n`);
+
+    expect(events).toEqual([{ type: 'artifact', artifact }]);
+  });
+
+  it('rejects an artifact url outside the conversations api or with a bad format', () => {
+    const artifact = {
+      id: 'e1',
+      format: 'docx',
+      fileName: 'trip.docx',
+      url: '/api/conversations/c1/exports/e1',
+      draft: false,
+    };
+    for (const bad of [
+      { url: 'https://evil.example.com/trip.docx' },
+      { url: '/other/c1/exports/e1' },
+      { format: 'exe' },
+    ]) {
+      expect(() =>
+        parseSseFrames(`event: artifact\ndata: ${JSON.stringify({ ...artifact, ...bad })}\n\n`),
+      ).toThrow();
+    }
   });
 
   it('rejects a non-https deepLink and a bad tool_call status', () => {
@@ -166,10 +254,126 @@ describe('parseSseFrames', () => {
     ).toThrow();
   });
 
+  it('parses a map_pins event', () => {
+    const pins = [{ name: 'Ramen Bar', kind: 'restaurant', lat: 35.68, lon: 139.76 }];
+
+    const { events } = parseSseFrames(
+      `event: map_pins\ndata: ${JSON.stringify({ cardId: 'card1', pins })}\n\n`,
+    );
+
+    expect(events).toEqual([{ type: 'map_pins', cardId: 'card1', pins }]);
+  });
+
+  it('rejects a map_pins event with a bad kind or an out-of-range coordinate', () => {
+    for (const pin of [
+      { name: 'A', kind: 'museum', lat: 1, lon: 1 },
+      { name: 'A', kind: 'place', lat: 91, lon: 1 },
+      { name: 'A', kind: 'place', lat: 1, lon: -181 },
+    ]) {
+      expect(() =>
+        parseSseFrames(
+          `event: map_pins\ndata: ${JSON.stringify({ cardId: 'card1', pins: [pin] })}\n\n`,
+        ),
+      ).toThrow();
+    }
+  });
+
+  it('parses the map fields of a plan card', () => {
+    const leg = {
+      from: { code: 'HND', name: 'Haneda', lat: 35.55, lon: 139.78 },
+      to: { code: 'SIN', name: 'Changi' },
+      departs: '2026-11-01T08:10:00',
+      arrives: '2026-11-01T14:25:00',
+    };
+    const card = {
+      ...planCard,
+      flights: [{ ...planCard.flights[0], legs: [leg] }],
+      hotels: [{ ...planCard.hotels[0], location: { lat: 35.7, lon: 139.7 } }],
+      days: [{ ...planCard.days[0], stops: [{ name: 'Temple', lat: 35.71, lon: 139.8 }] }],
+      reviewPins: [{ name: 'Ramen Bar', kind: 'restaurant', lat: 35.68, lon: 139.76 }],
+    };
+
+    const { events } = parseSseFrames(`event: plan_card\ndata: ${JSON.stringify(card)}\n\n`);
+
+    expect(events).toEqual([
+      {
+        type: 'plan_card',
+        card: {
+          ...card,
+          flights: [
+            { ...card.flights[0], legs: [{ ...leg, to: { ...leg.to, lat: null, lon: null } }] },
+          ],
+        },
+      },
+    ]);
+  });
+
+  it('still parses a sprint-1-shaped card and defaults the map fields', () => {
+    const { flights, hotels, days, reviewPins, ...rest } = planCard;
+    void reviewPins;
+    const old = {
+      ...rest,
+      flights: flights.map(({ id, summary, priceUsd, deepLink }) => ({
+        id,
+        summary,
+        priceUsd,
+        deepLink,
+      })),
+      hotels: hotels.map(({ id, summary, priceUsd, deepLink }) => ({
+        id,
+        summary,
+        priceUsd,
+        deepLink,
+      })),
+      days: days.map(({ date, activities, weather, costUsd }) => ({
+        date,
+        activities,
+        weather,
+        costUsd,
+      })),
+    };
+
+    const { events } = parseSseFrames(`event: plan_card\ndata: ${JSON.stringify(old)}\n\n`);
+
+    expect(events).toEqual([{ type: 'plan_card', card: planCard }]);
+  });
+
   it('rejects malformed data', () => {
     expect(() => parseSseFrames('event: token\ndata: not-json\n\n')).toThrow();
     expect(() => parseSseFrames('event: token\ndata: {"text":1}\n\n')).toThrow();
-    expect(() => parseSseFrames('event: other\ndata: {}\n\n')).toThrow();
+  });
+});
+
+describe('getConfig', () => {
+  async function freshGetConfig() {
+    vi.resetModules();
+    return (await import('./api')).getConfig;
+  }
+
+  it('fetches /config.json once and memoises it', async () => {
+    let calls = 0;
+    server.use(
+      http.get('*/config.json', () => {
+        calls += 1;
+        return HttpResponse.json({ googleMapsApiKey: 'key-1' });
+      }),
+    );
+    const getConfig = await freshGetConfig();
+
+    expect(await getConfig()).toEqual({ googleMapsApiKey: 'key-1' });
+    expect(await getConfig()).toEqual({ googleMapsApiKey: 'key-1' });
+    expect(calls).toBe(1);
+  });
+
+  it.each([
+    ['a server error', () => new HttpResponse(null, { status: 500 })],
+    ['a network failure', () => HttpResponse.error()],
+    ['malformed json', () => new HttpResponse('nope', { status: 200 })],
+  ])('falls back to an empty key on %s', async (_name, respond) => {
+    server.use(http.get('*/config.json', respond));
+    const getConfig = await freshGetConfig();
+
+    expect(await getConfig()).toEqual({ googleMapsApiKey: '' });
   });
 });
 
@@ -233,8 +437,46 @@ describe('getConversation', () => {
       id: 'c1',
       title: 'Hello',
       createdAt: '2026-10-01T00:00:00Z',
-      messages: [{ role: 'assistant', text: 'Hi', toolCalls: [], planCard: null, pills: [] }],
+      messages: [
+        {
+          role: 'assistant',
+          text: 'Hi',
+          toolCalls: [],
+          planCard: null,
+          pills: [],
+          sources: [],
+          artifacts: [],
+        },
+      ],
     });
+  });
+
+  it('parses sources and artifacts on a message', async () => {
+    const artifact = {
+      id: 'e1',
+      format: 'xlsx',
+      fileName: 'trip.xlsx',
+      url: '/api/conversations/c1/exports/e1',
+      draft: false,
+    };
+    const sources = [
+      { subject: 'Ramen Bar', links: [{ title: 'Guide', url: 'https://x.test/a' }] },
+    ];
+    server.use(
+      http.get('*/api/conversations/c1', () =>
+        HttpResponse.json({
+          id: 'c1',
+          title: 'Hello',
+          createdAt: '2026-10-01T00:00:00Z',
+          messages: [{ role: 'assistant', text: 'Hi', sources, artifacts: [artifact] }],
+        }),
+      ),
+    );
+
+    const conversation = await getConversation('c1');
+
+    expect(conversation.messages[0]?.sources).toEqual(sources);
+    expect(conversation.messages[0]?.artifacts).toEqual([artifact]);
   });
 
   it('parses tool calls, the plan card and pill objects', async () => {
@@ -269,6 +511,8 @@ describe('getConversation', () => {
         { text: 'Approve', action: 'approve' },
         { text: 'Cheaper', action: null },
       ],
+      sources: [],
+      artifacts: [],
     });
   });
 });

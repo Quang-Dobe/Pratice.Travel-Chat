@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 MAX_EXPRESSION_LENGTH = 200
 NOTICE_MARKERS = ("no key set", "free-tier limit reached")
-DOMAINS = ("flights", "hotels", "weather", "places")
+DOMAINS = ("flights", "hotels", "weather", "places", "geo", "search", "fetch")
 DOMAIN_SEPARATOR = "__"
 
 TOOL_KINDS: dict[str, str] = {"calculator": "calculate", "time": "calculate"}

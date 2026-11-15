@@ -1,5 +1,6 @@
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolCall, ToolMessage
@@ -10,8 +11,12 @@ from src.utils.prompt import tag
 from src.utils.tools import RawCall
 from src.utils.trip import today
 
+type AgentTier = Literal["answer", "helper"]
+type CallGuard = Callable[[ToolCall], ToolCall | str]
+
 MAX_ROUNDS = 6
 NO_TOOLS = "No tools are available for this request right now."
+LIMIT_REACHED = "limit reached"
 
 AGENT_PROMPT = """\
 You are {name}, a specialist of a travel assistant: {description}
@@ -46,6 +51,8 @@ class AgentSpec:
     when_to_use: str
     how_to_use: str
     tools: tuple[ToolSpec, ...]
+    tier: AgentTier = "answer"
+    max_calls: int | None = None
 
     def prompt(self) -> str:
         tools = "\n".join(f"- {tool.name}: {tool.description}" for tool in self.tools)
@@ -59,6 +66,12 @@ class AgentSpec:
 class AgentResult:
     summary: str
     calls: list[RawCall]
+
+
+def _refusal(call: ToolCall, text: str) -> ToolMessage:
+    return ToolMessage(
+        content=text, tool_call_id=call["id"] or "", name=call["name"], status="error"
+    )
 
 
 class DomainAgent:
@@ -79,7 +92,7 @@ class DomainAgent:
         self._by_name = {tool.name: tool for tool in self._tools}
         self._prompt = spec.prompt()
 
-    async def run(self, request: str) -> AgentResult:
+    async def run(self, request: str, guard: CallGuard | None = None) -> AgentResult:
         if not self._tools:
             return AgentResult(NO_TOOLS, [])
         messages: list[BaseMessage] = [
@@ -88,6 +101,7 @@ class DomainAgent:
         ]
         calls: list[RawCall] = []
         rounds = 0
+        started = 0
         while True:
             final = rounds >= MAX_ROUNDS
             bound = quiet(self._provider.with_tools(self._model, self._tools, final))
@@ -97,28 +111,38 @@ class DomainAgent:
                 return AgentResult(reply.text, calls)
             rounds += 1
             for call in reply.tool_calls:
-                result = await self._execute(call)
+                if self._over_cap(started):
+                    messages.append(_refusal(call, LIMIT_REACHED))
+                    continue
+                checked = call if guard is None else guard(call)
+                if isinstance(checked, str):
+                    messages.append(_refusal(call, checked))
+                    continue
+                started += 1
+                result = await self._execute(checked)
                 calls.append((call["name"], result.text, result.status != "error"))
                 messages.append(result)
+
+    def _over_cap(self, started: int) -> bool:
+        limit = self.spec.max_calls
+        return limit is not None and started >= limit
 
     async def _execute(self, call: ToolCall) -> ToolMessage:
         call_id = call["id"] or ""
         tool = self._by_name.get(call["name"])
         if tool is None:
-            return ToolMessage(
-                content=f"Unknown tool {call['name']}.",
-                tool_call_id=call_id,
-                name=call["name"],
-                status="error",
-            )
+            return _refusal(call, f"Unknown tool {call['name']}.")
         result = await tool.ainvoke(call)
         if isinstance(result, ToolMessage):
             return result
         return ToolMessage(content=str(result), tool_call_id=call_id, name=call["name"])
 
-    def as_tool(self) -> BaseTool:
+    def with_tools(self, extra: Sequence[BaseTool]) -> DomainAgent:
+        return DomainAgent(self.spec, self._provider, self._model, extra)
+
+    def as_tool(self, guard: CallGuard | None = None) -> BaseTool:
         async def run(request: str) -> tuple[str, list[RawCall]]:
-            result = await self.run(request)
+            result = await self.run(request, guard)
             return result.summary, result.calls
 
         return StructuredTool.from_function(

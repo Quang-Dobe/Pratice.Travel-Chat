@@ -126,6 +126,8 @@ services:
       ProviderKeys__flights__serpapi: ${SERPAPI_API_KEY:-}
       ProviderKeys__hotels__serpapi: ${SERPAPI_API_KEY:-}
       ProviderKeys__places__geoapify: ${GEOAPIFY_API_KEY:-}
+      ProviderKeys__search__serpapi: ${SERPAPI_API_KEY:-}
+      ProviderKeys__geocode__geoapify: ${GEOAPIFY_API_KEY:-}
     depends_on:
       redis:
         condition: service_healthy
@@ -140,6 +142,8 @@ services:
     build:
       context: .
       dockerfile: web/Dockerfile
+    environment:
+      GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY:-}
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:80/"]
       interval: 5s

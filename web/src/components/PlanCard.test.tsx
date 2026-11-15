@@ -2,9 +2,14 @@ import '@testing-library/jest-dom/vitest';
 import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { NO_FORECAST, type Picked, type PlanCard as PlanCardData } from '../api/api';
 import { PlanCard } from './PlanCard';
+
+vi.mock('../api/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../api/api')>()),
+  getConfig: () => Promise.resolve({ googleMapsApiKey: '' }),
+}));
 
 afterEach(cleanup);
 
@@ -12,18 +17,59 @@ const baseCard: PlanCardData = {
   id: 'card1',
   status: 'open',
   flights: [
-    { id: 'f1', summary: 'Flight one', priceUsd: 500, deepLink: 'https://example.com/f1' },
-    { id: 'f2', summary: 'Flight two', priceUsd: 900, deepLink: 'https://example.com/f2' },
+    {
+      id: 'f1',
+      summary: 'Flight one',
+      priceUsd: 500,
+      deepLink: 'https://example.com/f1',
+      legs: [],
+      location: null,
+    },
+    {
+      id: 'f2',
+      summary: 'Flight two',
+      priceUsd: 900,
+      deepLink: 'https://example.com/f2',
+      legs: [],
+      location: null,
+    },
   ],
   hotels: [
-    { id: 'h1', summary: 'Hotel one', priceUsd: 300, deepLink: 'https://example.com/h1' },
-    { id: 'h2', summary: 'Hotel two', priceUsd: 700, deepLink: 'https://example.com/h2' },
+    {
+      id: 'h1',
+      summary: 'Hotel one',
+      priceUsd: 300,
+      deepLink: 'https://example.com/h1',
+      legs: [],
+      location: null,
+    },
+    {
+      id: 'h2',
+      summary: 'Hotel two',
+      priceUsd: 700,
+      deepLink: 'https://example.com/h2',
+      legs: [],
+      location: null,
+    },
   ],
   picked: { flightId: 'f1', hotelId: 'h1' },
   days: [
-    { date: '2026-11-01', activities: ['Temple'], weather: '18C, 10% rain', costUsd: 90 },
-    { date: '2026-11-02', activities: ['Market'], weather: NO_FORECAST, costUsd: 90 },
+    {
+      date: '2026-11-01',
+      activities: ['Temple'],
+      weather: '18C, 10% rain',
+      costUsd: 90,
+      stops: [],
+    },
+    {
+      date: '2026-11-02',
+      activities: ['Market'],
+      weather: NO_FORECAST,
+      costUsd: 90,
+      stops: [],
+    },
   ],
+  reviewPins: [],
   budget: {
     flightUsd: 500,
     hotelUsd: 300,
@@ -136,6 +182,34 @@ describe('PlanCard', () => {
     expect(link).toHaveAttribute('target', '_blank');
     expect(link).toHaveAttribute('rel', 'noopener noreferrer');
     expect(screen.getAllByRole('link')).toHaveLength(4);
+  });
+
+  it('keeps all content and shows a notice when the map has no key', async () => {
+    const card: PlanCardData = {
+      ...baseCard,
+      reviewPins: [{ name: 'Ramen Bar', kind: 'restaurant', lat: 35.68, lon: 139.76 }],
+    };
+    render(
+      <PlanCard
+        card={card}
+        picked={card.picked}
+        interactive={true}
+        showMap={true}
+        onPick={() => undefined}
+      />,
+    );
+
+    expect(await screen.findByText('The map is unavailable right now.')).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Trip map' })).not.toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Flight one' })).toBeChecked();
+    expect(screen.getByRole('region', { name: 'Day 2026-11-01' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Budget' })).toBeInTheDocument();
+  });
+
+  it('shows no map block at all when showMap is off', () => {
+    render(<Harness />);
+
+    expect(screen.queryByText('The map is unavailable right now.')).not.toBeInTheDocument();
   });
 
   it('shows a replaced card read-only and dimmed', async () => {

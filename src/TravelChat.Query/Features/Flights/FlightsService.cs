@@ -12,6 +12,7 @@ public sealed class FlightsService(IHttpClientFactory httpClients, CachedFetch c
 
     private const string SearchUrl = "https://serpapi.com/search.json";
     private const int MaxOptions = 5;
+    private const string CacheVersion = "v2";
 
     private static readonly TimeSpan s_ttl = TimeSpan.FromHours(6);
 
@@ -52,6 +53,7 @@ public sealed class FlightsService(IHttpClientFactory httpClients, CachedFetch c
         var destinationCode = Airports(destination);
         var query = string.Join(
             '|',
+            CacheVersion,
             originCode,
             destinationCode,
             CachedFetch.Normalise(departDate),
@@ -127,7 +129,45 @@ public sealed class FlightsService(IHttpClientFactory httpClients, CachedFetch c
 
         var summary = Summarise(item);
         var token = item.OptionalString("booking_token") ?? item.OptionalString("departure_token") ?? summary;
-        return new FlightOption(ShortHash(token), summary, price.GetDecimal(), link);
+        return new FlightOption(ShortHash(token), summary, price.GetDecimal(), link, MapLegs(item));
+    }
+
+    private static List<FlightLeg> MapLegs(JsonElement item)
+    {
+        if (!item.TryGetProperty("flights", out var flights)
+            || flights.ValueKind != JsonValueKind.Array
+            || flights.GetArrayLength() == 0)
+        {
+            return [];
+        }
+
+        var legs = new List<FlightLeg>();
+        foreach (var flight in flights.EnumerateArray())
+        {
+            var departure = ReadEnd(flight, "departure_airport");
+            var arrival = ReadEnd(flight, "arrival_airport");
+            if (departure is null || arrival is null)
+            {
+                return [];
+            }
+
+            legs.Add(new FlightLeg(departure.Value.Airport, arrival.Value.Airport, departure.Value.Time, arrival.Value.Time));
+        }
+
+        return legs;
+    }
+
+    private static (Airport Airport, string Time)? ReadEnd(JsonElement flight, string property)
+    {
+        if (!flight.TryGetProperty(property, out var end)
+            || end.OptionalString("id") is not { Length: > 0 } code
+            || end.OptionalString("name") is not { Length: > 0 } name
+            || end.OptionalString("time") is not { Length: > 0 } time)
+        {
+            return null;
+        }
+
+        return (new Airport(code, name, null, null), time);
     }
 
     private static string Summarise(JsonElement item)

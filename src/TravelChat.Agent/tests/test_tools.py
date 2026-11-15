@@ -221,6 +221,9 @@ async def test_load_tools_groups_mcp_tools_by_domain_in_name_order() -> None:
         "hotels": [],
         "weather": ["weather__alerts", "weather__forecast"],
         "places": [],
+        "geo": [],
+        "search": [],
+        "fetch": [],
     }
 
 
@@ -253,7 +256,9 @@ async def test_load_tools_gives_empty_groups_when_mcp_fails() -> None:
     loaded = await load_tools(make_settings(), failing)
 
     assert [tool.name for tool in loaded.local] == ["calculator", "time"]
-    assert loaded.domains == {"flights": [], "hotels": [], "weather": [], "places": []}
+    assert loaded.domains == dict.fromkeys(
+        ("flights", "hotels", "weather", "places", "geo", "search", "fetch"), []
+    )
     assert loaded.local_named("calculator") is not None
     assert loaded.local_named("timer") is None
     assert loaded.for_domain("flights") == []

@@ -17,7 +17,7 @@ def confirmation(card: PlanCard) -> str:
     flight = _chosen(card["flights"], card["picked"]["flightId"])
     hotel = _chosen(card["hotels"], card["picked"]["hotelId"])
     return (
-        "Your trip is confirmed.\n"
+        "Wonderful, your trip is confirmed! Have a great journey.\n"
         f"Flight: {flight['summary']} (${flight['priceUsd']:,.2f}). Book it here: "
         f"{flight['deepLink']}\n"
         f"Hotel: {hotel['summary']} (${hotel['priceUsd']:,.2f}). Book it here: "

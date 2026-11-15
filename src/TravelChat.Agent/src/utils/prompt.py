@@ -1,5 +1,10 @@
 from html import escape
 
+WARM_TONE = (
+    "Sound warm and encouraging, like a friendly travel companion, while staying concise. "
+    "Write plain prose with no emoji."
+)
+
 
 def tag(name: str, text: str) -> str:
     body = escape(text, quote=False)

@@ -1,0 +1,366 @@
+import '@testing-library/jest-dom/vitest';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import type { ReactNode } from 'react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Leg, PlanCard } from '../api/api';
+import { PlanMap, resetMapAuthFailureForTests } from './PlanMap';
+
+const { getConfig, fitBounds, fakeMap, polylineBehavior } = vi.hoisted(() => {
+  const fit = vi.fn();
+  return {
+    getConfig: vi.fn(),
+    fitBounds: fit,
+    fakeMap: { fitBounds: fit },
+    polylineBehavior: { throws: false },
+  };
+});
+
+vi.mock('../api/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../api/api')>()),
+  getConfig,
+}));
+
+vi.mock('@vis.gl/react-google-maps', () => ({
+  APIProvider: ({
+    apiKey,
+    onError,
+    children,
+  }: {
+    apiKey: string;
+    onError: () => void;
+    children: ReactNode;
+  }) => (
+    <div data-testid="provider" data-key={apiKey}>
+      <button type="button" onClick={onError}>
+        fail load
+      </button>
+      {children}
+    </div>
+  ),
+  Map: ({
+    onCameraChanged,
+    children,
+  }: {
+    onCameraChanged: (event: { detail: { zoom: number } }) => void;
+    children: ReactNode;
+  }) => (
+    <div data-testid="map">
+      <button type="button" onClick={() => onCameraChanged({ detail: { zoom: 7 } })}>
+        zoom
+      </button>
+      {children}
+    </div>
+  ),
+  AdvancedMarker: ({ title, children }: { title?: string; children: ReactNode }) => (
+    <div data-testid="marker" data-title={title}>
+      {children}
+    </div>
+  ),
+  Polyline: () => {
+    if (polylineBehavior.throws) {
+      throw new Error('maps api is dead');
+    }
+    return <div data-testid="line" />;
+  },
+  useMap: () => fakeMap,
+}));
+
+afterEach(cleanup);
+
+beforeEach(() => {
+  resetMapAuthFailureForTests();
+  polylineBehavior.throws = false;
+  getConfig.mockReset();
+  fitBounds.mockReset();
+  getConfig.mockResolvedValue({ googleMapsApiKey: 'key-1' });
+});
+
+const placedLeg: Leg = {
+  from: { code: 'HND', name: 'Haneda', lat: 35.55, lon: 139.78 },
+  to: { code: 'SIN', name: 'Changi', lat: 1.36, lon: 103.99 },
+  departs: '2026-11-01T08:10:00',
+  arrives: '2026-11-01T14:25:00',
+};
+
+const unplacedLeg: Leg = {
+  from: { code: 'SIN', name: 'Changi', lat: null, lon: null },
+  to: { code: 'BKK', name: 'Suvarnabhumi', lat: null, lon: null },
+  departs: '2026-11-01T16:00:00',
+  arrives: '2026-11-01T17:30:00',
+};
+
+function makeCard(overrides: Partial<PlanCard> = {}): PlanCard {
+  return {
+    id: 'card1',
+    status: 'open',
+    flights: [
+      {
+        id: 'f1',
+        summary: 'Flight one',
+        priceUsd: 500,
+        deepLink: 'https://example.com/f1',
+        legs: [placedLeg, unplacedLeg],
+        location: null,
+      },
+      {
+        id: 'f2',
+        summary: 'Flight two',
+        priceUsd: 650,
+        deepLink: 'https://example.com/f2',
+        legs: [
+          {
+            ...placedLeg,
+            departs: '2026-11-01T21:00:00',
+            arrives: '2026-11-02T03:15:00',
+          },
+        ],
+        location: null,
+      },
+    ],
+    hotels: [
+      {
+        id: 'h1',
+        summary: 'Hotel one',
+        priceUsd: 300,
+        deepLink: 'https://example.com/h1',
+        legs: [],
+        location: { lat: 1.29, lon: 103.85 },
+      },
+      {
+        id: 'h2',
+        summary: 'Hotel two',
+        priceUsd: 700,
+        deepLink: 'https://example.com/h2',
+        legs: [],
+        location: null,
+      },
+    ],
+    picked: { flightId: 'f1', hotelId: 'h1' },
+    days: [
+      {
+        date: '2026-11-01',
+        activities: ['Temple'],
+        weather: '18C',
+        costUsd: 90,
+        stops: [{ name: 'Gardens', lat: 1.28, lon: 103.86 }],
+      },
+    ],
+    budget: {
+      flightUsd: 500,
+      hotelUsd: 300,
+      dailyUsd: 90,
+      totalUsd: 890,
+      budgetUsd: 2000,
+      overBudget: false,
+    },
+    reviewPins: [{ name: 'Ramen Bar', kind: 'restaurant', lat: 1.3, lon: 103.8 }],
+    ...overrides,
+  };
+}
+
+const noPoints = makeCard({
+  flights: [
+    {
+      id: 'f1',
+      summary: 'Flight one',
+      priceUsd: 500,
+      deepLink: 'https://example.com/f1',
+      legs: [unplacedLeg],
+      location: null,
+    },
+  ],
+  hotels: [],
+  days: [{ date: '2026-11-01', activities: [], weather: '', costUsd: 0, stops: [] }],
+  reviewPins: [],
+});
+
+describe('PlanMap', () => {
+  it('draws the map with markers and lines when the key is present', async () => {
+    render(<PlanMap card={makeCard()} pickedFlightId="f1" />);
+
+    const region = await screen.findByRole('region', { name: 'Trip map' });
+    expect(within(region).getByTestId('provider')).toHaveAttribute('data-key', 'key-1');
+    expect(within(region).getAllByTestId('line')).toHaveLength(1);
+    expect(
+      within(region)
+        .getAllByTestId('marker')
+        .map((marker) => marker.dataset.title),
+    ).toEqual(
+      expect.arrayContaining([
+        'Hotel: Hotel one',
+        'Day 1 stop 1: Gardens',
+        'Restaurant: Ramen Bar',
+      ]),
+    );
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('shows a notice and loads no provider when the key is empty', async () => {
+    getConfig.mockResolvedValue({ googleMapsApiKey: '' });
+    render(<PlanMap card={makeCard()} pickedFlightId="f1" />);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('The map is unavailable right now.');
+    expect(screen.queryByTestId('provider')).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Trip map' })).not.toBeInTheDocument();
+    expect(screen.getByRole('list', { name: 'Flight legs' })).toBeInTheDocument();
+  });
+
+  it('shows a notice when the script fails to load', async () => {
+    render(<PlanMap card={makeCard()} pickedFlightId="f1" />);
+
+    await userEvent.click(await screen.findByRole('button', { name: 'fail load' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('The map is unavailable right now.');
+    expect(screen.queryByTestId('provider')).not.toBeInTheDocument();
+  });
+
+  it('shows a notice when Google reports an auth failure', async () => {
+    render(<PlanMap card={makeCard()} pickedFlightId="f1" />);
+    await screen.findByTestId('provider');
+
+    const target = window as unknown as { gm_authFailure?: () => void };
+    expect(target.gm_authFailure).toBeTypeOf('function');
+    act(() => target.gm_authFailure?.());
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('The map is unavailable right now.');
+  });
+
+  it('starts a later map in the failed state once Google has reported an auth failure', async () => {
+    const target = window as unknown as { gm_authFailure?: () => void };
+    act(() => target.gm_authFailure?.());
+
+    render(<PlanMap card={makeCard()} pickedFlightId="f1" />);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('The map is unavailable right now.');
+    expect(screen.queryByRole('region', { name: 'Trip map' })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('provider')).not.toBeInTheDocument();
+  });
+
+  it('flips every mounted map to the notice when the auth failure fires', async () => {
+    render(
+      <>
+        <PlanMap card={makeCard()} pickedFlightId="f1" />
+        <PlanMap card={makeCard()} pickedFlightId="f1" />
+      </>,
+    );
+    await waitFor(() => expect(screen.getAllByTestId('provider')).toHaveLength(2));
+
+    const target = window as unknown as { gm_authFailure?: () => void };
+    act(() => target.gm_authFailure?.());
+
+    expect(await screen.findAllByRole('alert')).toHaveLength(2);
+    expect(screen.queryByTestId('provider')).not.toBeInTheDocument();
+  });
+
+  it('shows the notice and keeps the lists when the map throws while rendering', async () => {
+    polylineBehavior.throws = true;
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      render(<PlanMap card={makeCard()} pickedFlightId="f1" />);
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        'The map is unavailable right now.',
+      );
+      expect(screen.queryByRole('region', { name: 'Trip map' })).not.toBeInTheDocument();
+      expect(screen.getByRole('list', { name: 'Map points' })).toBeInTheDocument();
+      expect(screen.getByRole('list', { name: 'Flight legs' })).toBeInTheDocument();
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  it('shows a notice and never reads the config when no point has coordinates', async () => {
+    render(<PlanMap card={noPoints} pickedFlightId="f1" />);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('The map is unavailable right now.');
+    expect(getConfig).not.toHaveBeenCalled();
+    expect(screen.queryByRole('list', { name: 'Map points' })).not.toBeInTheDocument();
+  });
+
+  it('lists each leg of the picked flight with its times', async () => {
+    const { rerender } = render(<PlanMap card={makeCard()} pickedFlightId="f1" />);
+
+    const legs = screen.getByRole('list', { name: 'Flight legs' });
+    expect(
+      within(legs)
+        .getAllByRole('listitem')
+        .map((item) => item.textContent),
+    ).toEqual(['HND → SIN · 08:10 – 14:25', 'SIN → BKK · 16:00 – 17:30']);
+
+    rerender(<PlanMap card={makeCard()} pickedFlightId="f2" />);
+
+    expect(
+      within(screen.getByRole('list', { name: 'Flight legs' }))
+        .getAllByRole('listitem')
+        .map((item) => item.textContent),
+    ).toEqual(['HND → SIN · 21:00 – 03:15']);
+    expect(await screen.findByRole('region', { name: 'Trip map' })).toBeInTheDocument();
+  });
+
+  it('shows only the clock for space-separated leg times', async () => {
+    const spaced: Leg = {
+      ...placedLeg,
+      departs: '2026-12-01 08:10',
+      arrives: '2026-12-01 14:25',
+    };
+    const base = makeCard();
+    const card = makeCard({
+      flights: [{ ...(base.flights[0] as (typeof base.flights)[number]), legs: [spaced] }],
+    });
+    render(<PlanMap card={card} pickedFlightId="f1" />);
+
+    expect(
+      within(screen.getByRole('list', { name: 'Flight legs' }))
+        .getAllByRole('listitem')
+        .map((item) => item.textContent),
+    ).toEqual(['HND → SIN · 08:10 – 14:25']);
+    await screen.findByRole('region', { name: 'Trip map' });
+  });
+
+  it('names every pin by type in the hidden Map points list', async () => {
+    render(<PlanMap card={makeCard()} pickedFlightId="f1" />);
+
+    const points = screen.getByRole('list', { name: 'Map points' });
+    expect(
+      within(points)
+        .getAllByRole('listitem')
+        .map((item) => item.textContent),
+    ).toEqual(['Hotel: Hotel one', 'Day 1 stop 1: Gardens', 'Restaurant: Ramen Bar']);
+    await screen.findByRole('region', { name: 'Trip map' });
+  });
+
+  it('keeps the same map mounted and refits the bounds when pins arrive', async () => {
+    const { rerender } = render(<PlanMap card={makeCard()} pickedFlightId="f1" />);
+    const map = await screen.findByTestId('map');
+    await waitFor(() => expect(fitBounds).toHaveBeenCalledTimes(1));
+    const before = fitBounds.mock.calls[0]?.[0] as { north: number };
+
+    rerender(
+      <PlanMap
+        card={makeCard({
+          reviewPins: [
+            { name: 'Ramen Bar', kind: 'restaurant', lat: 1.3, lon: 103.8 },
+            { name: 'Far Cafe', kind: 'place', lat: 40, lon: 103.8 },
+          ],
+        })}
+        pickedFlightId="f1"
+      />,
+    );
+
+    expect(screen.getByTestId('map')).toBe(map);
+    await waitFor(() => expect(fitBounds).toHaveBeenCalledTimes(2));
+    const after = fitBounds.mock.calls[1]?.[0] as { north: number };
+    expect(after.north).toBeGreaterThan(before.north);
+    expect(getConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps data-zoom current from camera changes', async () => {
+    render(<PlanMap card={makeCard()} pickedFlightId="f1" />);
+    const region = await screen.findByRole('region', { name: 'Trip map' });
+
+    await userEvent.click(screen.getByRole('button', { name: 'zoom' }));
+
+    expect(region).toHaveAttribute('data-zoom', '7');
+  });
+});

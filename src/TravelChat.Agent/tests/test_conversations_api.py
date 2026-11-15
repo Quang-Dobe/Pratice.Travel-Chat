@@ -27,12 +27,16 @@ from testcontainers.community.postgres import PostgresContainer
 
 from src import main as main_module
 from src.auth import CurrentUser, get_current_user
+from src.conversations.router import PlanCardItem
+from src.conversations.router import _build_messages as build_messages
 from src.graph.classify import Classification
 from src.graph.deps import PlannerDeps
+from src.graph.state import PlanCard
 from src.graph.suggest import Pills
 from src.main import app
 from src.settings import Settings, Tier, get_settings
 from src.utils.modules import load
+from src.utils.reviews import PinName, PinNames
 from src.utils.tools import Tools, calculator, time_tool, with_events
 from src.utils.trip import today
 
@@ -49,6 +53,7 @@ CARD_PILLS: list[dict[str, Any]] = [
     *PILLS,
 ]
 WEATHER_CALL = {"name": "weather__forecast", "kind": "retrieve"}
+CARD_KEYS = {"id", "status", "flights", "hotels", "picked", "days", "budget", "reviewPins"}
 extract_module = load("extract")
 Details = extract_module.Details
 Extraction = extract_module.Extraction
@@ -163,12 +168,16 @@ class FakeProvider:
 
     def reset(self) -> None:
         keys = ("low", "medium", "answer", "weather", "places", "flights", "hotels")
+        keys += ("search", "fetch", "artifact")
         self.scripts = {key: [] for key in keys}
         self.scripts["low"].append(AIMessage(TITLE))
-        days = [itinerary_module.DayDraft(date="", activities=["Tsukiji market", "Senso-ji"])] * 5
+        days = [
+            itinerary_module.DayDraft(date="", activities=["Tsukiji market", "Senso-ji"], stops=[])
+        ] * 5
         self.queues = {
             "Pills": [Pills(items=["Plan a trip", "Check flights"])],
             "ItineraryDraft": [itinerary_module.ItineraryDraft(days=days)],
+            "PinNames": [PinNames(items=[])],
         }
         queue_turns(self.queues, classification())
         self.model_calls = []
@@ -235,6 +244,43 @@ async def hotels_search(city: str, checkIn: str, checkOut: str, travellers: int 
     return HOTELS
 
 
+GEO_POINTS: dict[str, tuple[float, float]] = {}
+
+
+async def geocode_places(places: list[str]) -> str:
+    return json.dumps(
+        [
+            {"name": name, "lat": GEO_POINTS[name][0], "lon": GEO_POINTS[name][1]}
+            for name in places
+            if name in GEO_POINTS
+        ]
+    )
+
+
+SEARCH_HITS = [
+    {"title": "Gracery guests", "url": "https://reviews.example/gracery", "snippet": "Great."},
+    {"title": "Old blog", "url": "http://insecure.example/gracery", "snippet": "Fine."},
+    {"title": "Trip notes", "url": "https://notes.example/tokyo", "snippet": "Nice."},
+]
+REVIEW_ANSWER = "Guests praise the quiet rooms."
+GRACERY_LINKS = [
+    {"title": "Gracery guests", "url": "https://reviews.example/gracery"},
+    {"title": "Trip notes", "url": "https://notes.example/tokyo"},
+]
+
+
+async def web_search(query: str) -> str:
+    return json.dumps(SEARCH_HITS)
+
+
+fetched: list[str] = []
+
+
+async def fetch_page(url: str) -> str:
+    fetched.append(url)
+    return json.dumps({"title": "Gracery guests", "url": url, "text": "Quiet rooms."})
+
+
 def data_tool(function: Any, name: str) -> BaseTool:
     tool = StructuredTool.from_function(coroutine=function, name=name, description=name)
     return with_events(tool)
@@ -248,6 +294,9 @@ async def fake_load_tools(settings: Settings) -> Tools:
             "places": [data_tool(attractions, "places__attractions")],
             "flights": [data_tool(flights_search, "flights__search")],
             "hotels": [data_tool(hotels_search, "hotels__search")],
+            "geo": [data_tool(geocode_places, "geo__geocode")],
+            "search": [data_tool(web_search, "search__web")],
+            "fetch": [data_tool(fetch_page, "fetch__page")],
         },
     )
 
@@ -370,7 +419,15 @@ def tokens_of(frames: list[tuple[str, Any]]) -> list[str]:
 
 
 def user_item(text: str) -> dict[str, Any]:
-    return {"role": "user", "text": text, "toolCalls": [], "planCard": None, "pills": []}
+    return {
+        "role": "user",
+        "text": text,
+        "toolCalls": [],
+        "planCard": None,
+        "pills": [],
+        "sources": [],
+        "artifacts": [],
+    }
 
 
 def assistant_item(
@@ -385,6 +442,8 @@ def assistant_item(
         "toolCalls": calls or [],
         "planCard": card,
         "pills": pills or [],
+        "sources": [],
+        "artifacts": [],
     }
 
 
@@ -654,7 +713,7 @@ def test_a_plan_turn_streams_the_card_and_the_detail_rebuilds_it_with_pills(
     assert events[0] == "tool_call"
     assert events[-3:] == ["plan_card", "pills", "done"]
     card = frames[-3][1]
-    assert set(card) == {"id", "status", "flights", "hotels", "picked", "days", "budget"}
+    assert set(card) == CARD_KEYS
     assert card["status"] == "open"
     assert [option["id"] for option in card["flights"]] == ["f1", "f2", "f3"]
     assert card["flights"][0] == {
@@ -662,7 +721,10 @@ def test_a_plan_turn_streams_the_card_and_the_detail_rebuilds_it_with_pills(
         "summary": "Flight 1",
         "priceUsd": 401.0,
         "deepLink": "https://flight.example/f1",
+        "legs": [],
+        "location": None,
     }
+    assert card["reviewPins"] == []
     assert [option["id"] for option in card["hotels"]] == ["h1", "h2", "h3"]
     assert card["picked"] == {"flightId": "f1", "hotelId": "h1"}
     assert [day["costUsd"] for day in card["days"]] == [90.0, 90.0, 90.0]
@@ -677,7 +739,7 @@ def test_a_plan_turn_streams_the_card_and_the_detail_rebuilds_it_with_pills(
     }
     assert frames[-2][1] == {"items": CARD_PILLS}
     text = "".join(tokens_of(frames))
-    assert text.startswith("Here is your 3-day plan for Tokyo.")
+    assert text.startswith("Here is your 3-day plan for Tokyo, and I hope you enjoy it!")
     detail = detail_of(client, user_a, conversation_id)
     calls = [
         {"name": "flights__search", "kind": "retrieve"},
@@ -685,6 +747,7 @@ def test_a_plan_turn_streams_the_card_and_the_detail_rebuilds_it_with_pills(
         {"name": "weather__forecast", "kind": "retrieve"},
         {"name": "places__attractions", "kind": "retrieve"},
         {"name": "calculator", "kind": "calculate"},
+        {"name": "geo__geocode", "kind": "retrieve"},
     ]
     assert detail["messages"] == [
         user_item("3 days in Tokyo from Singapore"),
@@ -762,3 +825,408 @@ def test_an_approve_with_no_plan_gets_the_note_and_no_card(
 
     assert "plan_card" not in events_of(frames)
     assert "".join(tokens_of(frames)).startswith("There is no plan to approve yet.")
+
+
+def airport(code: str, name: str) -> dict[str, Any]:
+    return {"code": code, "name": name, "lat": None, "lon": None}
+
+
+def test_the_event_and_the_detail_carry_legs_location_stops_and_review_pins(
+    client: TestClient, user_a: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    flights = json.loads(FLIGHTS)
+    flights[0]["legs"] = [
+        {
+            "from": airport("SIN", "Changi Airport"),
+            "to": airport("HND", "Haneda Airport"),
+            "departs": "2026-11-10 08:00",
+            "arrives": "2026-11-10 16:00",
+        }
+    ]
+    hotels = json.loads(HOTELS)
+    hotels[0]["location"] = {"lat": 35.6, "lon": 139.7}
+    monkeypatch.setitem(globals(), "FLIGHTS", json.dumps(flights))
+    monkeypatch.setitem(globals(), "HOTELS", json.dumps(hotels))
+    monkeypatch.setitem(GEO_POINTS, "Changi Airport", (1.36, 103.99))
+    monkeypatch.setitem(GEO_POINTS, "Haneda Airport", (35.55, 139.78))
+    monkeypatch.setitem(GEO_POINTS, "Senso-ji, Tokyo", (35.71, 139.79))
+    script_demo()
+    days = [
+        itinerary_module.DayDraft(date="", activities=["Senso-ji"], stops=["senso-ji", "Ghost"])
+    ] * 3
+    PROVIDER.queues["ItineraryDraft"] = [itinerary_module.ItineraryDraft(days=days)]
+    conversation_id = create(client, user_a, "3 days in Tokyo from Singapore")["id"]
+
+    frames = parse_frames(send(client, user_a, conversation_id, "3 days in Tokyo from Singapore"))
+
+    card = next(data for event, data in frames if event == "plan_card")
+    assert set(card) == CARD_KEYS
+    [leg] = card["flights"][0]["legs"]
+    assert leg["from"] == {"code": "SIN", "name": "Changi Airport", "lat": 1.36, "lon": 103.99}
+    assert leg["to"] == {"code": "HND", "name": "Haneda Airport", "lat": 35.55, "lon": 139.78}
+    assert card["flights"][1]["legs"] == []
+    assert card["hotels"][0]["location"] == {"lat": 35.6, "lon": 139.7}
+    assert card["hotels"][1]["location"] is None
+    assert [day["stops"] for day in card["days"]] == [
+        [{"name": "Senso-ji", "lat": 35.71, "lon": 139.79}]
+    ] * 3
+    assert card["reviewPins"] == []
+    detail = detail_of(client, user_a, conversation_id)
+    assert detail["messages"][1]["planCard"] == card
+    used = [call["name"] for call in detail["messages"][1]["toolCalls"]]
+    assert "geo__geocode" in used
+
+
+def sprint_1_card() -> dict[str, Any]:
+    return {
+        "messageId": "m1",
+        "id": "c1",
+        "status": "open",
+        "flights": [
+            {"id": "f1", "summary": "Flight 1", "priceUsd": 1.0, "deepLink": "https://x.example"}
+        ],
+        "hotels": [],
+        "picked": {"flightId": "f1", "hotelId": ""},
+        "days": [{"date": "2026-11-10", "activities": ["Walk"], "weather": "mild", "costUsd": 9}],
+        "budget": {
+            "flightUsd": 1.0,
+            "hotelUsd": 0.0,
+            "dailyUsd": 9.0,
+            "totalUsd": 10.0,
+            "budgetUsd": None,
+            "overBudget": False,
+        },
+    }
+
+
+def test_a_card_saved_in_sprint_1_still_validates_with_empty_map_fields() -> None:
+    saved = {key: value for key, value in sprint_1_card().items() if key != "messageId"}
+
+    item = PlanCardItem.model_validate(saved).model_dump(by_alias=True)
+
+    assert item["flights"][0]["legs"] == []
+    assert item["flights"][0]["location"] is None
+    assert item["days"][0]["stops"] == []
+    assert item["reviewPins"] == []
+
+
+def test_the_detail_of_a_conversation_whose_card_has_no_review_pins_still_builds() -> None:
+    card = cast("PlanCard", sprint_1_card())
+    assert "reviewPins" not in card
+
+    [item] = build_messages([AIMessage("Here is your plan.", id="m1")], [card], [])
+
+    assert item.plan_card is not None
+    assert item.plan_card.review_pins == []
+    assert item.plan_card.days[0].stops == []
+
+
+def test_a_message_saved_before_sources_existed_builds_with_none() -> None:
+    [item] = build_messages([AIMessage("Hello.", id="m1")], [], [])
+
+    assert item.sources == []
+
+
+def test_the_detail_of_a_message_carries_the_sources_saved_on_it() -> None:
+    saved = [{"subject": "Hotel Gracery", "links": GRACERY_LINKS}]
+    message = AIMessage("Guests like it.", id="m1", additional_kwargs={"sources": saved})
+
+    [item] = build_messages([message], [], [])
+
+    assert item.model_dump(by_alias=True)["sources"] == saved
+
+
+def script_review_answer(
+    *requests: str, fetch_url: str = "https://reviews.example/gracery"
+) -> None:
+    subjects = requests or ("Hotel Gracery Tokyo reviews",)
+    for request in subjects:
+        PROVIDER.scripts["answer"].append(call_reply("search_agent", {"request": request}))
+        PROVIDER.scripts["search"] += [
+            call_reply("search__web", {"query": request}),
+            AIMessage("Guests like it."),
+        ]
+    fetch = {"url": fetch_url}
+    PROVIDER.scripts["answer"] += [
+        call_reply("fetch_agent", {"request": fetch["url"]}),
+        AIMessage(REVIEW_ANSWER),
+    ]
+    PROVIDER.scripts["fetch"] += [call_reply("fetch__page", fetch), AIMessage("Quiet rooms.")]
+    PROVIDER.queues["Classification"] = [Classification(verdict="travel", route="answer")]
+
+
+def test_a_review_turn_streams_sources_saves_them_and_makes_no_pin_call_without_a_card(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    script_review_answer()
+    PROVIDER.queues["PinNames"] = [
+        PinNames(items=[PinName(name="Ichiran", kind="restaurant")]),
+        PinNames(items=[]),
+    ]
+    text = "What do people say about Hotel Gracery?"
+    conversation_id = create(client, user_a, text)["id"]
+
+    frames = parse_frames(send(client, user_a, conversation_id, text))
+
+    events = events_of(frames)
+    used = [data["name"] for event, data in frames if event == "tool_call"]
+    assert {"search__web", "fetch__page"} <= set(used)
+    assert "map_pins" not in events
+    assert events[-2:] == ["pills", "done"]
+    items = [{"subject": "Hotel Gracery Tokyo reviews", "links": GRACERY_LINKS}]
+    assert [data for event, data in frames if event == "sources"] == [{"items": items}]
+    assert "".join(tokens_of(frames)) == REVIEW_ANSWER
+    assert len(PROVIDER.queues["PinNames"]) == 2
+    detail = detail_of(client, user_a, conversation_id)
+    assert detail["messages"][-1]["sources"] == items
+    assert detail["messages"][-1]["text"] == REVIEW_ANSWER
+
+
+def test_a_review_turn_after_a_plan_pins_found_places_on_the_latest_card(
+    client: TestClient, user_a: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(GEO_POINTS, "Ichiran, Tokyo", (35.69, 139.7))
+    script_demo()
+    conversation_id = create(client, user_a, "3 days in Tokyo from Singapore")["id"]
+    first = parse_frames(send(client, user_a, conversation_id, "3 days in Tokyo from Singapore"))
+    card = next(data for event, data in first if event == "plan_card")
+    script_review_answer()
+    PROVIDER.queues["PinNames"] = [
+        PinNames(
+            items=[
+                PinName(name="Ichiran", kind="restaurant"),
+                PinName(name="Nowhere Cafe", kind="restaurant"),
+            ]
+        )
+    ]
+
+    frames = parse_frames(send(client, user_a, conversation_id, "Any reviews for Hotel Gracery?"))
+
+    events = events_of(frames)
+    assert events.index("sources") < events.index("map_pins")
+    pin = {"name": "Ichiran", "kind": "restaurant", "lat": 35.69, "lon": 139.7}
+    assert [data for event, data in frames if event == "map_pins"] == [
+        {"cardId": card["id"], "pins": [pin]}
+    ]
+    detail = detail_of(client, user_a, conversation_id)
+    assert detail["messages"][1]["planCard"]["reviewPins"] == [pin]
+    review = detail["messages"][3]
+    items = [{"subject": "Hotel Gracery Tokyo reviews", "links": GRACERY_LINKS}]
+    assert review["sources"] == items
+    assert {"name": "geo__geocode", "kind": "retrieve"} in review["toolCalls"]
+
+
+def test_a_hit_url_with_an_ampersand_is_fetched_unescaped_and_listed_first(
+    client: TestClient, user_a: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    url = "https://example.com/r?id=1&lang=en"
+    other = {"title": "Other", "url": "https://other.example/x", "snippet": "."}
+    page = {"title": "Reviews", "url": url, "snippet": "."}
+    monkeypatch.setitem(globals(), "SEARCH_HITS", [other, page])
+    fetched.clear()
+    script_review_answer(fetch_url=url.replace("&", "&amp;"))
+    conversation_id = create(client, user_a, "Reviews please")["id"]
+
+    frames = parse_frames(send(client, user_a, conversation_id, "Reviews please"))
+
+    assert fetched == [url]
+    [sourced] = [data for event, data in frames if event == "sources"]
+    assert [link["url"] for link in sourced["items"][0]["links"]] == [url, other["url"]]
+
+
+def test_a_url_that_search_did_not_return_is_refused_and_never_fetched(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    fetched.clear()
+    script_review_answer(fetch_url="https://evil.example/steer")
+    conversation_id = create(client, user_a, "Reviews please")["id"]
+
+    frames = parse_frames(send(client, user_a, conversation_id, "Reviews please"))
+
+    assert fetched == []
+    assert "fetch__page" not in [d["name"] for e, d in frames if e == "tool_call"]
+    [sourced] = [data for event, data in frames if event == "sources"]
+    assert sourced["items"][0]["links"] == GRACERY_LINKS
+    detail = detail_of(client, user_a, conversation_id)
+    names = [call["name"] for call in detail["messages"][-1]["toolCalls"]]
+    assert "fetch__page" not in names
+    assert "search__web" in names
+
+
+def test_the_answer_runs_each_review_agent_at_most_twice_per_turn(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    script_review_answer("Hotel A Tokyo", "Ramen B Tokyo")
+    PROVIDER.scripts["answer"].insert(2, call_reply("search_agent", {"request": "Cafe C Tokyo"}))
+    conversation_id = create(client, user_a, "Reviews please")["id"]
+
+    frames = parse_frames(send(client, user_a, conversation_id, "Reviews please"))
+
+    assert "notice" not in events_of(frames)
+    [sourced] = [data for event, data in frames if event == "sources"]
+    assert [item["subject"] for item in sourced["items"]] == ["Hotel A Tokyo", "Ramen B Tokyo"]
+    assert PROVIDER.scripts["search"] == []
+
+
+EXPORT_ANSWER = "Your file is ready."
+CSV_HEADER = "Section,Date,Item,Details,Weather,Cost in USD"
+
+
+def script_export(fmt: str) -> None:
+    PROVIDER.queues["Classification"] = [Classification(verdict="travel", route="answer")]
+    PROVIDER.scripts["answer"] += [
+        call_reply("artifact_agent", {"request": fmt}),
+        AIMessage(EXPORT_ANSWER),
+    ]
+    PROVIDER.scripts["artifact"] += [
+        call_reply("artifact__export", {"format": fmt}),
+        AIMessage("Done."),
+    ]
+
+
+def plan_and_export(
+    client: TestClient, headers: dict[str, str], fmt: str = "csv"
+) -> tuple[str, list[tuple[str, Any]]]:
+    script_demo()
+    conversation_id = create(client, headers, "3 days in Tokyo from Singapore")["id"]
+    send(client, headers, conversation_id, "3 days in Tokyo from Singapore")
+    script_export(fmt)
+    frames = parse_frames(send(client, headers, conversation_id, "Send me the plan as a file"))
+    return conversation_id, frames
+
+
+def artifact_of(frames: list[tuple[str, Any]]) -> dict[str, Any]:
+    [artifact] = [data for event, data in frames if event == "artifact"]
+    return cast("dict[str, Any]", artifact)
+
+
+def download(
+    client: TestClient, headers: dict[str, str], conversation_id: str, artifact: dict[str, Any]
+) -> Any:
+    return client.get(f"/conversations/{conversation_id}/exports/{artifact['id']}", headers=headers)
+
+
+def test_an_export_turn_streams_the_artifact_and_the_detail_carries_it(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    conversation_id, frames = plan_and_export(client, user_a)
+
+    artifact = artifact_of(frames)
+    assert set(artifact) == {"id", "format", "fileName", "url", "draft"}
+    assert artifact["format"] == "csv"
+    assert artifact["fileName"] == "tokyo-plan-draft.csv"
+    assert artifact["draft"] is True
+    assert artifact["url"] == f"/api/conversations/{conversation_id}/exports/{artifact['id']}"
+    assert events_of(frames)[-2:] == ["pills", "done"]
+    assert "".join(tokens_of(frames)) == EXPORT_ANSWER
+    assert artifact["url"] not in "".join(tokens_of(frames))
+    detail = detail_of(client, user_a, conversation_id)
+    assert detail["messages"][-1]["artifacts"] == [artifact]
+    assert detail["messages"][1]["artifacts"] == []
+    assert {"name": "artifact__export", "kind": "retrieve"} in detail["messages"][-1]["toolCalls"]
+
+
+def test_the_owner_downloads_the_file_with_the_safe_headers(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    conversation_id, frames = plan_and_export(client, user_a)
+    artifact = artifact_of(frames)
+
+    response = download(client, user_a, conversation_id, artifact)
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/csv")
+    assert response.headers["content-disposition"] == 'attachment; filename="tokyo-plan-draft.csv"'
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["cache-control"] == "private, no-store"
+    body = response.content.decode("utf-8-sig")
+    assert response.content.startswith(b"\xef\xbb\xbf")
+    assert body.splitlines()[0] == CSV_HEADER
+    assert "Draft — not approved" in body
+
+
+def test_another_users_export_is_a_404(
+    client: TestClient, user_a: dict[str, str], user_b: dict[str, str]
+) -> None:
+    conversation_id, frames = plan_and_export(client, user_a)
+    artifact = artifact_of(frames)
+
+    response = download(client, user_b, conversation_id, artifact)
+
+    assert response.status_code == 404
+    assert response.headers["content-type"].startswith("application/problem+json")
+    assert "attachment" not in response.headers.get("content-disposition", "")
+
+
+def test_an_unknown_malformed_or_foreign_export_is_a_404(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    conversation_id, frames = plan_and_export(client, user_a)
+    artifact = artifact_of(frames)
+    other_id = create(client, user_a, "another chat")["id"]
+
+    for path in (
+        f"/conversations/{conversation_id}/exports/{uuid4()}",
+        f"/conversations/{conversation_id}/exports/garbage",
+        f"/conversations/{other_id}/exports/{artifact['id']}",
+        f"/conversations/{uuid4()}/exports/{artifact['id']}",
+    ):
+        response = client.get(path, headers=user_a)
+        assert response.status_code == 404
+        assert response.headers["content-type"].startswith("application/problem+json")
+
+
+def test_an_export_without_a_plan_card_makes_no_file(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    script_export("csv")
+    conversation_id = create(client, user_a, "Send me the plan")["id"]
+
+    frames = parse_frames(send(client, user_a, conversation_id, "Send me the plan"))
+
+    assert "artifact" not in events_of(frames)
+    detail = detail_of(client, user_a, conversation_id)
+    assert detail["messages"][-1]["artifacts"] == []
+
+
+def test_an_approved_plan_exports_a_final_file(client: TestClient, user_a: dict[str, str]) -> None:
+    script_demo()
+    conversation_id = create(client, user_a, "3 days in Tokyo from Singapore")["id"]
+    first = parse_frames(send(client, user_a, conversation_id, "3 days in Tokyo from Singapore"))
+    card = next(data for event, data in first if event == "plan_card")
+    action = {"type": "approve", "cardId": card["id"], "flightId": "f2", "hotelId": "h3"}
+    send(client, user_a, conversation_id, "Approve", action)
+    script_export("excel")
+
+    frames = parse_frames(send(client, user_a, conversation_id, "Export it to excel"))
+
+    artifact = artifact_of(frames)
+    assert artifact["format"] == "xlsx"
+    assert artifact["fileName"] == "tokyo-plan.xlsx"
+    assert artifact["draft"] is False
+    response = download(client, user_a, conversation_id, artifact)
+    assert response.status_code == 200
+    assert response.content.startswith(b"PK")
+
+
+def test_a_message_saved_before_exports_existed_builds_with_none() -> None:
+    [item] = build_messages([AIMessage("Hello.", id="m1")], [], [])
+
+    assert item.artifacts == []
+
+
+def test_the_detail_of_a_message_carries_the_artifacts_saved_on_it() -> None:
+    saved = [
+        {
+            "id": str(uuid4()),
+            "format": "docx",
+            "fileName": "tokyo-plan.docx",
+            "url": "/api/conversations/c/exports/e",
+            "draft": False,
+        }
+    ]
+    message = AIMessage("Ready.", id="m1", additional_kwargs={"artifacts": saved})
+
+    [item] = build_messages([message], [], [])
+
+    assert item.model_dump(by_alias=True)["artifacts"] == saved

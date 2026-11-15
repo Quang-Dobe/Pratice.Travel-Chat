@@ -47,6 +47,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             settings=settings,
             tools=tools,
             agents=build_agents(provider, tools, settings),
+            pool=pool,
         )
         app.state.pool = pool
         app.state.graph = build_graph(checkpointer, app.state.planner)

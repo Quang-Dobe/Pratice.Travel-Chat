@@ -28,6 +28,8 @@ from src.graph.deps import PlannerDeps
 from src.graph.state import PlannerState
 from src.graph.suggest import Pills
 from src.settings import Settings, Tier
+from src.utils.geo import geocode
+from src.utils.messages import parse_options
 from src.utils.modules import load
 from src.utils.tools import Tools, calculator, time_tool, with_events
 from src.utils.trip import NO_FORECAST, today
@@ -210,6 +212,11 @@ class Scenario:
         self.calls: list[str] = []
         self.hotel_results = [HOTELS]
         self.hotel_error: Exception | None = None
+        self.flight_result = FLIGHTS
+        self.attractions_result = ATTRACTIONS
+        self.geocoded: list[list[str]] = []
+        self.geo_points: dict[str, tuple[float, float]] = {}
+        self.geo_error: Exception | None = None
         settings = Settings(database_url="postgresql://unused", jwks_url="http://unused")
         tools = Tools(
             local=[with_events(calculator), with_events(time_tool)],
@@ -218,6 +225,7 @@ class Scenario:
                 "hotels": [self._tool("hotels__search", self._hotels)],
                 "weather": [self._tool("weather__forecast", self._forecast)],
                 "places": [self._tool("places__attractions", self._attractions)],
+                "geo": [self._tool("geo__geocode", self._geocode)],
             },
         )
         deps = PlannerDeps(
@@ -230,8 +238,13 @@ class Scenario:
         self.config = thread_config(uuid4(), uuid4())
         self.provider.scripts["low"].append(AIMessage("Tokyo trip"))
         self.provider.queues["Pills"] = [Pills(items=["Cheaper hotel", "Add places"])]
+        self.draft_stops([])
+
+    def draft_stops(self, stops: list[str]) -> None:
         days = [
-            itinerary_module.DayDraft(date="", activities=["Tsukiji market", "Hike Mt. Takao"])
+            itinerary_module.DayDraft(
+                date="", activities=["Tsukiji market", "Hike Mt. Takao"], stops=stops
+            )
         ] * DAYS
         self.provider.queues["ItineraryDraft"] = [itinerary_module.ItineraryDraft(days=days)]
 
@@ -244,7 +257,7 @@ class Scenario:
         self, origin: str, destination: str, departDate: str, returnDate: str, travellers: int = 1
     ) -> str:
         self.calls.append("flights__search")
-        return FLIGHTS
+        return self.flight_result
 
     async def _hotels(self, city: str, checkIn: str, checkOut: str, travellers: int = 1) -> str:
         self.calls.append("hotels__search")
@@ -264,7 +277,18 @@ class Scenario:
 
     async def _attractions(self, city: str, interests: list[str] | None = None) -> str:
         self.calls.append("places__attractions")
-        return ATTRACTIONS
+        return self.attractions_result
+
+    async def _geocode(self, places: list[str]) -> str:
+        self.geocoded.append(places)
+        if self.geo_error is not None:
+            raise self.geo_error
+        found = [
+            {"name": name, "lat": self.geo_points[name][0], "lon": self.geo_points[name][1]}
+            for name in places
+            if name in self.geo_points
+        ]
+        return json.dumps(found)
 
     def classify(self, *items: Turn) -> None:
         queue_turns(self.provider.queues, *items)
@@ -371,6 +395,7 @@ async def test_answering_the_origin_runs_every_part_in_order_and_shows_one_card(
         "weather__forecast",
         "places__attractions",
         "calculator",
+        "geo__geocode",
     }
     assert scenario.calls.count("flights__search") == 1
     kinds = [e["event"] for e in events if e["event"] in {"tool_call", "plan_card", "pills"}]
@@ -384,7 +409,11 @@ async def test_answering_the_origin_runs_every_part_in_order_and_shows_one_card(
         "summary": "Flight 1",
         "priceUsd": 450.0,
         "deepLink": "https://flight.example/f1",
+        "legs": [],
+        "location": None,
     }
+    assert card["reviewPins"] == []
+    assert {tuple(day["stops"]) for day in card["days"]} == {()}
     assert len(card["days"]) == DAYS
     assert card["days"][0]["weather"] == "12 to 20 °C, 30% chance of rain"
     assert {day["weather"] for day in card["days"][1:]} == {NO_FORECAST}
@@ -752,7 +781,7 @@ async def test_over_budget_warns_with_the_breakdown_and_swaps_nothing() -> None:
         "$450.00 flight + $600.00 hotel + $450.00 daily costs = $1,500.00 total "
         "against a budget of $600.00"
     )
-    assert "Warning: this is over budget" in text
+    assert "Heads up, this is over budget" in text
     assert breakdown in text
     assert "Nothing was changed" in text
 
@@ -790,15 +819,15 @@ async def test_a_missing_hotel_key_leaves_hotels_empty_with_a_notice_and_no_appr
     assert card["picked"]["hotelId"] == ""
     assert [option["id"] for option in card["flights"]] == ["f1", "f2", "f3"]
     assert {"event": "notice", "message": message} in events
-    assert "I could not find hotel options right now." in values["messages"][-1].text
+    assert "Sorry, I could not find hotel options right now." in values["messages"][-1].text
     assert [pill["action"] for pill in of_kind(events, "pills")[0]["items"]] == [None, None]
 
 
 def test_build_days_places_each_draft_on_its_date_and_leaves_a_missing_date_empty() -> None:
     draft = itinerary_module.ItineraryDraft(
         days=[
-            itinerary_module.DayDraft(date="2026-11-03", activities=["Market"]),
-            itinerary_module.DayDraft(date="2026-11-01", activities=["Temple", " "]),
+            itinerary_module.DayDraft(date="2026-11-03", activities=["Market"], stops=[]),
+            itinerary_module.DayDraft(date="2026-11-01", activities=["Temple", " "], stops=[]),
         ]
     )
 
@@ -810,11 +839,298 @@ def test_build_days_places_each_draft_on_its_date_and_leaves_a_missing_date_empt
 def test_build_days_falls_back_to_the_order_when_a_draft_has_no_known_date() -> None:
     draft = itinerary_module.ItineraryDraft(
         days=[
-            itinerary_module.DayDraft(date="2026-11-02", activities=["Hike"]),
-            itinerary_module.DayDraft(date="day one", activities=["Temple"]),
+            itinerary_module.DayDraft(date="2026-11-02", activities=["Hike"], stops=[]),
+            itinerary_module.DayDraft(date="day one", activities=["Temple"], stops=[]),
         ]
     )
 
     days = itinerary_module.build_days(["2026-11-01", "2026-11-02"], draft, 90.0)
 
     assert [day["activities"] for day in days] == [["Temple"], ["Hike"]]
+
+
+def test_build_days_matches_stops_to_attractions_ignoring_case_and_caps_them_at_four() -> None:
+    attractions = itinerary_module.parse_attractions(
+        json.dumps([{"name": "Senso-ji", "category": "temple", "lat": 35.71, "lon": 139.79}])
+    )
+    names = [" SENSO-JI ", "senso-ji", "Hidden Cafe", "A", "B", "C"]
+    draft = itinerary_module.ItineraryDraft(
+        days=[itinerary_module.DayDraft(date="2026-11-01", activities=[], stops=names)]
+    )
+
+    [day] = itinerary_module.build_days(
+        ["2026-11-01"], draft, 90.0, itinerary_module.known_stops(attractions)
+    )
+
+    assert day["stops"] == [
+        {"name": "Senso-ji", "lat": 35.71, "lon": 139.79},
+        {"name": "Hidden Cafe", "lat": None, "lon": None},
+        {"name": "A", "lat": None, "lon": None},
+        {"name": "B", "lat": None, "lon": None},
+    ]
+
+
+def test_a_stop_copied_with_its_category_matches_the_attraction_and_keeps_its_coordinates() -> None:
+    known = itinerary_module.known_stops(
+        itinerary_module.parse_attractions(
+            json.dumps([{"name": "Foo", "category": "catering", "lat": 1.5, "lon": 2.5}])
+        )
+    )
+    draft = itinerary_module.ItineraryDraft(
+        days=[itinerary_module.DayDraft(date="2026-11-01", activities=[], stops=["Foo (catering)"])]
+    )
+
+    [day] = itinerary_module.build_days(["2026-11-01"], draft, 90.0, known)
+
+    assert day["stops"] == [{"name": "Foo", "lat": 1.5, "lon": 2.5}]
+
+
+def test_an_unmatched_stop_is_stored_without_its_trailing_category() -> None:
+    draft = itinerary_module.ItineraryDraft(
+        days=[itinerary_module.DayDraft(date="2026-11-01", activities=[], stops=["Bar (tourism)"])]
+    )
+
+    [day] = itinerary_module.build_days(["2026-11-01"], draft, 90.0)
+
+    assert day["stops"] == [{"name": "Bar", "lat": None, "lon": None}]
+
+
+def test_when_every_day_has_no_stops_each_day_gets_one_known_attraction_in_order() -> None:
+    known = itinerary_module.known_stops(
+        itinerary_module.parse_attractions(
+            json.dumps(
+                [
+                    {"name": "A", "lat": 1.0, "lon": 2.0},
+                    {"name": "B", "lat": 3.0, "lon": 4.0},
+                ]
+            )
+        )
+    )
+    draft = itinerary_module.ItineraryDraft(
+        days=[
+            itinerary_module.DayDraft(date="2026-11-01", activities=[], stops=[]),
+            itinerary_module.DayDraft(date="2026-11-02", activities=[], stops=[]),
+            itinerary_module.DayDraft(date="2026-11-03", activities=[], stops=[]),
+        ]
+    )
+
+    days = itinerary_module.build_days(
+        ["2026-11-01", "2026-11-02", "2026-11-03"], draft, 90.0, known
+    )
+
+    assert [[stop["name"] for stop in day["stops"]] for day in days] == [["A"], ["B"], ["A"]]
+
+
+def test_when_every_day_has_no_stops_and_there_are_no_attractions_the_stops_stay_empty() -> None:
+    draft = itinerary_module.ItineraryDraft(
+        days=[itinerary_module.DayDraft(date="2026-11-01", activities=[], stops=[])]
+    )
+
+    [day] = itinerary_module.build_days(["2026-11-01"], draft, 90.0, {})
+
+    assert day["stops"] == []
+
+
+def test_the_model_sees_attraction_names_and_categories_only() -> None:
+    attractions = itinerary_module.parse_attractions(
+        json.dumps(
+            [
+                {"name": "Senso-ji", "category": "temple", "lat": 35.71, "lon": 139.79},
+                {"name": "Park", "category": "", "lat": None, "lon": None},
+            ]
+        )
+    )
+
+    assert itinerary_module.attractions_prompt_text(attractions) == "Senso-ji (temple)\nPark"
+
+
+async def test_stops_matched_to_attractions_keep_their_coordinates_and_skip_geocoding() -> None:
+    scenario = Scenario()
+    scenario.attractions_result = json.dumps(
+        [{"name": "Senso-ji", "category": "temple", "lat": 35.71, "lon": 139.79}]
+    )
+    scenario.draft_stops([" SENSO-JI "])
+
+    await scenario.full_demo()
+
+    [card] = (await scenario.values())["cards"]
+    placed = [{"name": "Senso-ji", "lat": 35.71, "lon": 139.79}]
+    assert all(day["stops"] == placed for day in card["days"])
+    assert scenario.geocoded == []
+
+
+async def test_unmatched_stops_are_geocoded_with_the_city_and_dropped_if_missing() -> None:
+    scenario = Scenario()
+    scenario.attractions_result = json.dumps([{"name": "Senso-ji", "category": "temple"}])
+    scenario.draft_stops(["Senso-ji", "Hidden Cafe", "Ghost Spot"])
+    scenario.geo_points = {"Senso-ji, Tokyo": (35.71, 139.79), "Hidden Cafe, Tokyo": (35.6, 139.7)}
+
+    events = await scenario.full_demo()
+
+    values = await scenario.values()
+    [card] = values["cards"]
+    assert scenario.geocoded == [["Senso-ji, Tokyo", "Hidden Cafe, Tokyo", "Ghost Spot, Tokyo"]]
+    assert {day["stops"][0]["name"] for day in card["days"]} == {"Senso-ji"}
+    assert [stop["name"] for stop in card["days"][0]["stops"]] == ["Senso-ji", "Hidden Cafe"]
+    assert card["days"][0]["stops"][1] == {"name": "Hidden Cafe", "lat": 35.6, "lon": 139.7}
+    [shown] = of_kind(events, "plan_card")
+    assert shown["days"] == card["days"]
+    used = [use["name"] for use in values["messages"][-1].additional_kwargs["turn_tools"]]
+    assert used.count("geo__geocode") == 1
+
+
+def flights_with_legs() -> str:
+    def airport(code: str, name: str) -> dict[str, Any]:
+        return {"code": code, "name": name, "lat": None, "lon": None}
+
+    def option(index: int, price: float, stop: tuple[str, str]) -> dict[str, Any]:
+        legs = [
+            {
+                "from": airport("SIN", "Changi Airport"),
+                "to": airport(*stop),
+                "departs": "2026-11-10 08:00",
+                "arrives": "2026-11-10 16:00",
+            }
+        ]
+        return {
+            "id": f"f{index}",
+            "summary": f"Flight {index}",
+            "priceUsd": price,
+            "deepLink": f"https://flight.example/f{index}",
+            "legs": legs,
+        }
+
+    return json.dumps([option(1, 450.0, ("HND", "")), option(2, 520.0, ("NRT", "Narita"))])
+
+
+async def test_legs_and_hotel_location_are_kept_and_airports_are_placed_in_one_call() -> None:
+    scenario = Scenario()
+    scenario.flight_result = flights_with_legs()
+    hotels = json.loads(HOTELS)
+    hotels[0]["location"] = {"lat": 35.6, "lon": 139.7}
+    hotels[1]["location"] = {"lat": 135.0, "lon": 139.7}
+    scenario.hotel_results = [json.dumps(hotels)]
+    scenario.geo_points = {"Changi Airport": (1.36, 103.99), "HND airport": (35.55, 139.78)}
+
+    await scenario.full_demo()
+
+    [card] = (await scenario.values())["cards"]
+    assert scenario.geocoded == [["Changi Airport", "HND airport", "Senso-ji, Tokyo", "Narita"]]
+    [leg] = card["flights"][0]["legs"]
+    assert leg["from"] == {"code": "SIN", "name": "Changi Airport", "lat": 1.36, "lon": 103.99}
+    assert leg["to"] == {"code": "HND", "name": "", "lat": 35.55, "lon": 139.78}
+    assert leg["departs"] == "2026-11-10 08:00"
+    [far_leg] = card["flights"][1]["legs"]
+    assert far_leg["to"] == {"code": "NRT", "name": "Narita", "lat": None, "lon": None}
+    assert card["hotels"][0]["location"] == {"lat": 35.6, "lon": 139.7}
+    assert card["hotels"][1]["location"] is None
+    assert card["hotels"][2]["location"] is None
+
+
+@pytest.mark.parametrize(
+    "error",
+    [ToolException("Geocoding data is unavailable: no key set."), RuntimeError("boom")],
+)
+async def test_a_geocode_error_still_emits_the_card_without_pins(error: Exception) -> None:
+    scenario = Scenario()
+    scenario.attractions_result = json.dumps([{"name": "Senso-ji", "category": "temple"}])
+    scenario.draft_stops(["Senso-ji"])
+    scenario.geo_error = error
+
+    events = await scenario.full_demo()
+
+    [card] = (await scenario.values())["cards"]
+    assert len(scenario.geocoded) == 1
+    assert {tuple(day["stops"]) for day in card["days"]} == {()}
+    assert len(of_kind(events, "plan_card")) == 1
+    assert [e["event"] for e in events if e["event"] in {"plan_card", "pills"}][-2:] == [
+        "plan_card",
+        "pills",
+    ]
+    if isinstance(error, ToolException):
+        assert {"event": "notice", "message": str(error)} in events
+
+
+async def test_a_card_without_any_flight_legs_or_stops_makes_no_geocode_call() -> None:
+    scenario = Scenario()
+    scenario.attractions_result = json.dumps([])
+
+    await scenario.full_demo()
+
+    assert scenario.geocoded == []
+
+
+def test_options_keep_valid_legs_and_location_and_drop_malformed_ones() -> None:
+    end = {"code": "HND", "name": "Haneda", "lat": 35.5, "lon": None}
+    leg = {"from": end, "to": end, "departs": "08:00", "arrives": "10:00"}
+    base = {"summary": "s", "priceUsd": 1, "deepLink": "https://x.example"}
+    text = json.dumps(
+        [
+            {**base, "id": "ok", "legs": [leg], "location": {"lat": 1.5, "lon": 2.5}},
+            {**base, "id": "bad-leg", "legs": [leg, {**leg, "to": {"code": ""}}]},
+            {**base, "id": "bad-time", "legs": [{**leg, "departs": ""}]},
+            {**base, "id": "bad-place", "location": {"lat": 91, "lon": 2}},
+            {**base, "id": "bool-place", "location": {"lat": True, "lon": 2}},
+            {**base, "id": "plain"},
+        ]
+    )
+
+    options = {option["id"]: option for option in parse_options(text)}
+
+    assert options["ok"]["legs"] == [
+        {
+            "from": {"code": "HND", "name": "Haneda", "lat": 35.5, "lon": None},
+            "to": {"code": "HND", "name": "Haneda", "lat": 35.5, "lon": None},
+            "departs": "08:00",
+            "arrives": "10:00",
+        }
+    ]
+    assert options["ok"]["location"] == {"lat": 1.5, "lon": 2.5}
+    for kept in ("bad-leg", "bad-time", "bad-place", "bool-place", "plain"):
+        assert not options[kept].get("legs")
+        assert options[kept].get("location") is None
+
+
+class FakeGeoTool:
+    def __init__(self, reply: Any) -> None:
+        self.reply = reply
+        self.sent: list[list[str]] = []
+
+    def tools(self) -> Tools:
+        async def geocode_places(places: list[str]) -> str:
+            self.sent.append(places)
+            if isinstance(self.reply, Exception):
+                raise self.reply
+            return cast("str", self.reply)
+
+        tool = StructuredTool.from_function(
+            coroutine=geocode_places, name="geo__geocode", description="geo"
+        )
+        return Tools(domains={"geo": [tool]})
+
+
+async def test_geocode_sends_at_most_thirty_unique_names_and_matches_by_the_text_sent() -> None:
+    names = [f"Place {index}" for index in range(40)]
+    fake = FakeGeoTool(json.dumps([{"name": "Place 0", "lat": 1, "lon": 2}, {"name": "Other"}]))
+
+    found = await geocode(fake.tools(), [*names, "Place 0"])
+
+    assert fake.sent == [names[:30]]
+    assert found == {"Place 0": {"lat": 1.0, "lon": 2.0}}
+
+
+@pytest.mark.parametrize(
+    "reply", ["Geocoding data is unavailable: no key set.", "not json", "{}", RuntimeError("down")]
+)
+async def test_geocode_gives_nothing_for_error_text_bad_json_or_a_failing_tool(
+    reply: Any,
+) -> None:
+    assert await geocode(FakeGeoTool(reply).tools(), ["Tokyo Tower"]) == {}
+
+
+async def test_geocode_without_the_tool_or_names_makes_no_call() -> None:
+    fake = FakeGeoTool("[]")
+
+    assert await geocode(Tools(), ["Tokyo Tower"]) == {}
+    assert await geocode(fake.tools(), [" ", ""]) == {}
+    assert fake.sent == []

@@ -9,7 +9,13 @@ public sealed class PlacesServiceTests
     private const string GeocodeBody = """{"results":[{"lon":2.35,"lat":48.85}]}""";
 
     private const string PlacesBody =
-        """{"features":[{"properties":{"name":"Louvre","categories":["entertainment.museum","tourism"]}},{"properties":{"categories":["x"]}}]}""";
+        """
+        {"features":[
+          {"properties":{"name":"Louvre","lat":48.8606,"lon":2.3376,"categories":["entertainment.museum","tourism"]}},
+          {"properties":{"name":"Out Of Range","lat":123.0,"lon":2.0}},
+          {"properties":{"name":"No Coordinates"}},
+          {"properties":{"categories":["x"]}}]}
+        """;
 
     private static readonly Dictionary<string, string?> s_withKey = new() { ["ProviderKeys:places:geoapify"] = "secret" };
 
@@ -38,8 +44,22 @@ public sealed class PlacesServiceTests
 
         result.Status.ShouldBe(ProviderStatus.Ok);
         var attractions = result.Data.ShouldNotBeNull();
-        attractions.Count.ShouldBe(1);
-        attractions[0].ShouldBe(new Attraction("Louvre", "entertainment.museum"));
+        attractions.Count.ShouldBe(3);
+        attractions[0].ShouldBe(new Attraction("Louvre", "entertainment.museum", 48.8606, 2.3376));
+    }
+
+    [Fact]
+    public async Task OutOfRangeOrMissingCoordinatesAreNull()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var rig = new CacheRig(s_withKey);
+        var service = new PlacesService(new StubHttpClientFactory(new StubHandler(Route)), rig.Fetch);
+
+        var result = await service.GetAttractionsAsync("Paris", ["museums"], ct);
+
+        var attractions = result.Data.ShouldNotBeNull();
+        attractions[1].ShouldBe(new Attraction("Out Of Range", "attraction", null, null));
+        attractions[2].ShouldBe(new Attraction("No Coordinates", "attraction", null, null));
     }
 
     [Fact]

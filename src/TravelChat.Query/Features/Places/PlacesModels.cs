@@ -1,3 +1,3 @@
 namespace TravelChat.Query.Features.Places;
 
-public sealed record Attraction(string Name, string Category);
+public sealed record Attraction(string Name, string Category, double? Lat, double? Lon);

@@ -30,12 +30,15 @@ import {
   type Picked,
   type Pill,
   type PlanCard as PlanCardData,
+  type ReviewPin,
   type StreamEvent,
   sendMessage,
   UnauthorizedError,
 } from '../api/api';
+import { ExportLink } from '../components/ExportLink';
 import { initials } from '../components/initials';
 import { PlanCard } from '../components/PlanCard';
+import { ReviewSources } from '../components/ReviewSources';
 import { SuggestionPills } from '../components/SuggestionPills';
 import { ToolProgress } from '../components/ToolProgress';
 import { brandGradient } from '../theme';
@@ -76,7 +79,15 @@ function TypingDots() {
 type ChatMessage = Message & { notice?: string };
 
 function emptyAssistant(): ChatMessage {
-  return { role: 'assistant', text: '', toolCalls: [], planCard: null, pills: [] };
+  return {
+    role: 'assistant',
+    text: '',
+    toolCalls: [],
+    planCard: null,
+    pills: [],
+    sources: [],
+    artifacts: [],
+  };
 }
 
 function latestCardIndex(messages: ChatMessage[]): number {
@@ -111,9 +122,37 @@ function applyEvent(message: ChatMessage, event: StreamEvent): ChatMessage {
       return { ...message, pills: event.items };
     case 'notice':
       return { ...message, notice: event.message };
+    case 'sources':
+      return { ...message, sources: event.items };
+    case 'artifact':
+      return { ...message, artifacts: [...(message.artifacts ?? []), event.artifact] };
+    case 'map_pins':
     case 'done':
       return message;
   }
+}
+
+function mergePins(existing: ReviewPin[], incoming: ReviewPin[]): ReviewPin[] {
+  const names = new Set(incoming.map((pin) => pin.name));
+  return [...existing.filter((pin) => !names.has(pin.name)), ...incoming];
+}
+
+function applyMapPins(
+  messages: ChatMessage[],
+  cardId: string,
+  incoming: ReviewPin[],
+): ChatMessage[] {
+  return messages.map((message) =>
+    message.planCard?.id === cardId
+      ? {
+          ...message,
+          planCard: {
+            ...message.planCard,
+            reviewPins: mergePins(message.planCard.reviewPins, incoming),
+          },
+        }
+      : message,
+  );
 }
 
 type MessageBubbleProps = {
@@ -122,6 +161,7 @@ type MessageBubbleProps = {
   isLast: boolean;
   streaming: boolean;
   cardInteractive: boolean;
+  showMap: boolean;
   picked: Picked | null;
   onPickPill: (pill: Pill) => void;
   onPickOptions: (cardId: string, picked: Picked) => void;
@@ -133,6 +173,7 @@ function MessageBubble({
   isLast,
   streaming,
   cardInteractive,
+  showMap,
   picked,
   onPickPill,
   onPickOptions,
@@ -162,14 +203,14 @@ function MessageBubble({
       <Paper
         elevation={0}
         sx={{
-          px: 2,
-          py: 1.25,
+          px: 2.5,
+          py: 1.75,
           maxWidth: '75%',
           ...(planCard ? { width: '75%' } : {}),
-          borderRadius: 3,
+          borderRadius: 4,
           ...(isUser
-            ? { bgcolor: 'primary.main', color: 'primary.contrastText', borderTopRightRadius: 4 }
-            : { border: 1, borderColor: 'divider', borderTopLeftRadius: 4 }),
+            ? { bgcolor: 'primary.main', color: 'primary.contrastText', borderTopRightRadius: 6 }
+            : { border: 1, borderColor: 'divider', borderTopLeftRadius: 6 }),
         }}
       >
         <Typography variant="caption" component="p" sx={{ fontWeight: 600, opacity: 0.75 }}>
@@ -179,6 +220,10 @@ function MessageBubble({
         <Typography component="p" sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
           {showDots ? <TypingDots /> : message.text}
         </Typography>
+        {!isUser && <ReviewSources items={message.sources ?? []} />}
+        {(message.artifacts ?? []).map((artifact) => (
+          <ExportLink key={artifact.id} artifact={artifact} />
+        ))}
         {message.notice && (
           <Alert severity="info" sx={{ mt: 1 }}>
             {message.notice}
@@ -189,6 +234,7 @@ function MessageBubble({
             card={planCard}
             picked={picked}
             interactive={cardInteractive}
+            showMap={showMap}
             onPick={(next) => onPickOptions(planCard.id, next)}
           />
         )}
@@ -256,15 +302,16 @@ function EmptyState({ name, disabled, onPick }: EmptyStateProps) {
         <Typography variant="h4" component="h1">
           {firstName ? `Where to next, ${firstName}?` : 'Where to next?'}
         </Typography>
-        <Typography color="text.secondary" sx={{ mt: 1, mb: 4 }}>
-          Tell me where, when and what you love, and I will help plan the trip.
+        <Typography color="text.secondary" sx={{ mt: 1.5, mb: 5 }}>
+          Hi, I am your travel buddy. Tell me where, when and what you love, and we will plan a
+          lovely trip together.
         </Typography>
-        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 1.5 }}>
+        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 2 }}>
           {starters.map((starter) => (
             <Card
               key={starter.title}
               variant="outlined"
-              sx={{ borderRadius: 3, textAlign: 'left' }}
+              sx={{ borderRadius: 4, textAlign: 'left' }}
             >
               <CardActionArea
                 disabled={disabled}
@@ -337,12 +384,24 @@ function ChatView({ conversation }: { conversation: Conversation | undefined }) 
       }
       setMessages((previous) => [
         ...previous,
-        { role: 'user', text, toolCalls: [], planCard: null, pills: [] },
+        {
+          role: 'user',
+          text,
+          toolCalls: [],
+          planCard: null,
+          pills: [],
+          sources: [],
+          artifacts: [],
+        },
         emptyAssistant(),
       ]);
       appended = true;
       for await (const event of sendMessage(id, text, action, controller.signal)) {
-        applyToLast(event);
+        if (event.type === 'map_pins') {
+          setMessages((previous) => applyMapPins(previous, event.cardId, event.pins));
+        } else {
+          applyToLast(event);
+        }
       }
     } catch (caught) {
       if (appended) {
@@ -458,6 +517,7 @@ function ChatView({ conversation }: { conversation: Conversation | undefined }) 
               cardInteractive={
                 index === latestIndex && message.planCard?.status === 'open' && !streaming
               }
+              showMap={index === latestIndex}
               picked={message.planCard ? pickedFor(message.planCard) : null}
               onPickPill={pickPill}
               onPickOptions={pickOptions}

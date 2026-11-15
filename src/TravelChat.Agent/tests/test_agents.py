@@ -1,9 +1,11 @@
+import copy
 from collections.abc import Sequence
+from html import unescape
 from typing import Any
 
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolCall, ToolMessage
 from langchain_core.outputs import ChatResult
 from langchain_core.runnables import Runnable, RunnableLambda
 from langchain_core.tools import BaseTool, StructuredTool, ToolException
@@ -16,6 +18,8 @@ from src.utils.tools import Tools
 
 
 class FakeChat(BaseChatModel):
+    tier: str = ""
+
     @property
     def _llm_type(self) -> str:
         return "fake"
@@ -35,13 +39,14 @@ class FakeProvider:
         self.script = script
         self.binds: list[tuple[list[str], bool]] = []
         self.seen: list[list[BaseMessage]] = []
+        self.bound_tiers: list[str] = []
 
     @property
     def errors(self) -> type[Exception]:
         return RuntimeError
 
     def model(self, tier: Tier) -> BaseChatModel:
-        return FakeChat()
+        return FakeChat(tier=tier)
 
     def system(self, prompt: str, hint: str) -> SystemMessage:
         return SystemMessage(f"{prompt}\n{hint}")
@@ -50,6 +55,7 @@ class FakeProvider:
         self, model: BaseChatModel, tools: Sequence[BaseTool], final: bool
     ) -> Runnable[Any, Any]:
         self.binds.append(([tool.name for tool in tools], final))
+        self.bound_tiers.append(model.tier if isinstance(model, FakeChat) else "")
 
         async def reply(messages: list[BaseMessage]) -> AIMessage:
             self.seen.append(list(messages))
@@ -109,7 +115,7 @@ async def test_an_agent_only_binds_and_runs_its_own_domain_tools() -> None:
 
     result = await agents["weather"].run("forecast for Tokyo")
 
-    assert set(agents) == {"flights", "hotels", "weather", "places"}
+    assert set(agents) == {"flights", "hotels", "weather", "places", "search", "fetch", "artifact"}
     assert provider.binds == [(["weather__forecast"], False)] * 2
     assert executed == ["Tokyo"]
     assert result.summary == "Sunny."
@@ -231,6 +237,206 @@ async def test_as_tool_returns_the_summary_and_the_raw_calls_as_the_artifact() -
     assert isinstance(message, ToolMessage)
     assert message.content == "Sunny."
     assert message.artifact == [("weather__forecast", "Sunny in Tokyo", True)]
+
+
+def search_tool(executed: list[str]) -> BaseTool:
+    async def search(query: str) -> str:
+        executed.append(query)
+        return "[]"
+
+    return StructuredTool.from_function(coroutine=search, name="search__web", description="Web.")
+
+
+def fetch_tool(executed: list[str]) -> BaseTool:
+    async def read(url: str) -> str:
+        executed.append(url)
+        return "{}"
+
+    return StructuredTool.from_function(coroutine=read, name="fetch__page", description="Page.")
+
+
+def test_the_search_and_fetch_specs_run_on_the_helper_tier_with_a_call_cap() -> None:
+    specs = {spec.domain: spec for spec in SPECS}
+    search = specs["search"]
+    fetch = specs["fetch"]
+
+    assert (search.name, search.tier, search.max_calls) == ("search_agent", "helper", 2)
+    assert (fetch.name, fetch.tier, fetch.max_calls) == ("fetch_agent", "helper", 3)
+    assert [tool.name for tool in specs["search"].tools] == ["search__web"]
+    assert [tool.name for tool in specs["fetch"].tools] == ["fetch__page"]
+    assert all(spec.tier == "answer" and spec.max_calls is None for spec in SPECS[:4])
+
+
+async def test_each_agent_gets_the_model_of_its_tier() -> None:
+    searched: list[str] = []
+    read: list[str] = []
+    tools = Tools(
+        domains={
+            "weather": [forecast_tool([])],
+            "search": [search_tool(searched)],
+            "fetch": [fetch_tool(read)],
+        }
+    )
+    settings = Settings(
+        database_url="postgresql://unused",
+        jwks_url="http://unused",
+        answer_tier="high",
+        helper_tier="medium",
+    )
+    provider = FakeProvider([AIMessage("a"), AIMessage("b"), AIMessage("c")])
+    agents = build_agents(provider, tools, settings)
+
+    await agents["weather"].run("forecast")
+    await agents["search"].run("reviews")
+    await agents["fetch"].run("read")
+
+    assert provider.bound_tiers == ["high", "medium", "medium"]
+
+
+def test_the_helper_tier_defaults_to_low_and_an_empty_value_means_the_default() -> None:
+    assert make_settings().helper_tier == "low"
+    blank = Settings.model_validate(
+        {"database_url": "postgresql://unused", "jwks_url": "http://unused", "helper_tier": " "}
+    )
+    assert blank.helper_tier == "low"
+
+
+async def test_calls_past_the_cap_are_not_run_and_get_a_limit_reached_error() -> None:
+    searched: list[str] = []
+    calls = [ToolCall(name="search__web", args={"query": f"q{i}"}, id=f"c{i}") for i in range(3)]
+    provider = FakeProvider([AIMessage(content="", tool_calls=calls), AIMessage("Done.")])
+    tools = Tools(domains={"search": [search_tool(searched)]})
+    agent = build_agents(provider, tools, make_settings())["search"]
+
+    result = await agent.run("reviews of Hotel Gracery Tokyo")
+
+    assert searched == ["q0", "q1"]
+    assert result.calls == [("search__web", "[]", True), ("search__web", "[]", True)]
+    refusal = provider.seen[1][-1]
+    assert isinstance(refusal, ToolMessage)
+    assert refusal.status == "error"
+    assert refusal.content == "limit reached"
+
+
+async def test_a_guard_can_rewrite_a_call_or_refuse_it_without_running_the_tool() -> None:
+    read: list[str] = []
+
+    def guard(call: ToolCall) -> ToolCall | str:
+        url = str(call["args"]["url"])
+        if "evil" in url:
+            return "refused"
+        checked = copy.copy(call)
+        checked["args"] = {"url": unescape(url)}
+        return checked
+
+    calls = [
+        ToolCall(name="fetch__page", args={"url": "https://a.example/?x=1&amp;y=2"}, id="c1"),
+        ToolCall(name="fetch__page", args={"url": "https://evil.example/"}, id="c2"),
+    ]
+    provider = FakeProvider([AIMessage(content="", tool_calls=calls), AIMessage("Done.")])
+    tools = Tools(domains={"fetch": [fetch_tool(read)]})
+    agent = build_agents(provider, tools, make_settings())["fetch"]
+
+    result = await agent.run("read these", guard)
+
+    assert read == ["https://a.example/?x=1&y=2"]
+    assert result.calls == [("fetch__page", "{}", True)]
+    refusal = provider.seen[1][-1]
+    assert isinstance(refusal, ToolMessage)
+    assert (refusal.status, refusal.content) == ("error", "refused")
+
+
+async def test_the_cap_counts_per_run_not_per_agent() -> None:
+    searched: list[str] = []
+    provider = FakeProvider(
+        [
+            tool_reply("search__web", {"query": "one"}),
+            AIMessage("First."),
+            tool_reply("search__web", {"query": "two"}),
+            AIMessage("Second."),
+        ]
+    )
+    tools = Tools(domains={"search": [search_tool(searched)]})
+    agent = build_agents(provider, tools, make_settings())["search"]
+
+    await agent.run("first")
+    await agent.run("second")
+
+    assert searched == ["one", "two"]
+
+
+async def test_an_agent_without_a_cap_runs_every_call() -> None:
+    executed: list[str] = []
+    calls = [
+        ToolCall(name="weather__forecast", args={"city": f"City{i}"}, id=f"c{i}") for i in range(4)
+    ]
+    provider = FakeProvider([AIMessage(content="", tool_calls=calls), AIMessage("Done.")])
+    agent = build_agents(provider, toolbox(executed), make_settings())["weather"]
+
+    await agent.run("tour")
+
+    assert len(executed) == 4
+
+
+def export_stub(executed: list[str]) -> BaseTool:
+    async def export(format: str) -> str:
+        executed.append(format)
+        return f"File ready: plan.{format}."
+
+    return StructuredTool.from_function(
+        coroutine=export, name="artifact__export", description="Export."
+    )
+
+
+def test_the_artifact_spec_runs_on_the_helper_tier_with_one_call() -> None:
+    spec = next(spec for spec in SPECS if spec.domain == "artifact")
+
+    assert (spec.name, spec.tier, spec.max_calls) == ("artifact_agent", "helper", 1)
+    assert [tool.name for tool in spec.tools] == ["artifact__export"]
+
+
+async def test_with_tools_binds_the_extra_tools_to_the_copy_only() -> None:
+    executed: list[str] = []
+    provider = FakeProvider([tool_reply("artifact__export", {"format": "csv"}), AIMessage("Done.")])
+    agent = build_agents(provider, Tools(), make_settings())["artifact"]
+
+    bound = agent.with_tools([export_stub(executed)])
+    original = await agent.run("csv please")
+    result = await bound.run("csv please")
+
+    assert original.summary == NO_TOOLS
+    assert executed == ["csv"]
+    assert result.calls == [("artifact__export", "File ready: plan.csv.", True)]
+    assert provider.binds == [(["artifact__export"], False)] * 2
+    assert bound.spec is agent.spec
+
+
+async def test_with_tools_still_filters_the_extra_tools_by_the_spec() -> None:
+    executed: list[str] = []
+    provider = FakeProvider([AIMessage("Nothing.")])
+    agent = build_agents(provider, Tools(), make_settings())["artifact"]
+
+    await agent.with_tools([export_stub(executed), forecast_tool(executed)]).run("csv")
+
+    assert provider.binds == [(["artifact__export"], False)]
+
+
+async def test_the_artifact_agent_runs_one_export_per_run() -> None:
+    executed: list[str] = []
+    calls = [
+        ToolCall(name="artifact__export", args={"format": "csv"}, id="c1"),
+        ToolCall(name="artifact__export", args={"format": "docx"}, id="c2"),
+    ]
+    provider = FakeProvider([AIMessage(content="", tool_calls=calls), AIMessage("Done.")])
+    agent = build_agents(provider, Tools(), make_settings())["artifact"]
+
+    result = await agent.with_tools([export_stub(executed)]).run("both")
+
+    assert executed == ["csv"]
+    assert len(result.calls) == 1
+    refusal = provider.seen[1][-1]
+    assert isinstance(refusal, ToolMessage)
+    assert (refusal.status, refusal.content) == ("error", "limit reached")
 
 
 def test_without_a_provider_there_are_no_agents() -> None:

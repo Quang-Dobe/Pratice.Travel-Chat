@@ -1,7 +1,7 @@
 import copy
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
-from typing import Any, Literal, TypedDict, cast
+from typing import Any, Literal, NotRequired, TypedDict, cast
 
 type Level = Literal["low", "mid", "high"]
 type Part = Literal["flights", "hotels", "itinerary"]
@@ -56,11 +56,41 @@ class Criteria(TypedDict, total=False):
     hotels: str
 
 
+class Airport(TypedDict):
+    code: str
+    name: str
+    lat: float | None
+    lon: float | None
+
+
+Leg = TypedDict("Leg", {"from": Airport, "to": Airport, "departs": str, "arrives": str})
+
+
+class Location(TypedDict):
+    lat: float
+    lon: float
+
+
+class Stop(TypedDict):
+    name: str
+    lat: float | None
+    lon: float | None
+
+
+class ReviewPin(TypedDict):
+    name: str
+    kind: Literal["restaurant", "place"]
+    lat: float
+    lon: float
+
+
 class Option(TypedDict):
     id: str
     summary: str
     priceUsd: float
     deepLink: str
+    legs: NotRequired[list[Leg]]
+    location: NotRequired[Location | None]
 
 
 class Day(TypedDict):
@@ -68,6 +98,7 @@ class Day(TypedDict):
     activities: list[str]
     weather: str
     costUsd: float
+    stops: NotRequired[list[Stop]]
 
 
 class Budget(TypedDict):
@@ -364,6 +395,7 @@ def fill_weather(days: Sequence[Day], forecast: Mapping[str, str]) -> list[Day]:
             activities=list(day["activities"]),
             weather=forecast.get(day["date"], NO_FORECAST),
             costUsd=day["costUsd"],
+            stops=[Stop(**stop) for stop in day.get("stops", [])],
         )
         for day in days
     ]
