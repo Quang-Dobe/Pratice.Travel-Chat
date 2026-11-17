@@ -26,11 +26,9 @@ import {
   type Conversation,
   createConversation,
   getConversation,
-  type Message,
   type Picked,
   type Pill,
   type PlanCard as PlanCardData,
-  type ReviewPin,
   type StreamEvent,
   sendMessage,
   UnauthorizedError,
@@ -42,6 +40,13 @@ import { ReviewSources } from '../components/ReviewSources';
 import { SuggestionPills } from '../components/SuggestionPills';
 import { ToolProgress } from '../components/ToolProgress';
 import { brandGradient } from '../theme';
+import {
+  applyEvent,
+  applyMapPins,
+  type ChatMessage,
+  latestCardIndex,
+  newMessage,
+} from './chatMessages';
 
 function isAbort(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError';
@@ -73,85 +78,6 @@ function TypingDots() {
         />
       ))}
     </Box>
-  );
-}
-
-type ChatMessage = Message & { notice?: string };
-
-function emptyAssistant(): ChatMessage {
-  return {
-    role: 'assistant',
-    text: '',
-    toolCalls: [],
-    planCard: null,
-    pills: [],
-    sources: [],
-    artifacts: [],
-  };
-}
-
-function latestCardIndex(messages: ChatMessage[]): number {
-  return messages.findLastIndex((message) => message.planCard !== null);
-}
-
-function applyEvent(message: ChatMessage, event: StreamEvent): ChatMessage {
-  switch (event.type) {
-    case 'token':
-      return { ...message, text: message.text + event.text };
-    case 'tool_call': {
-      const { kind, name, status } = event;
-      if (status === 'started') {
-        return { ...message, toolCalls: [...message.toolCalls, { kind, name, status }] };
-      }
-      const openIndex = message.toolCalls.findLastIndex(
-        (call) => call.name === name && call.status === 'started',
-      );
-      if (openIndex === -1) {
-        return { ...message, toolCalls: [...message.toolCalls, { kind, name, status }] };
-      }
-      return {
-        ...message,
-        toolCalls: message.toolCalls.map((call, index) =>
-          index === openIndex ? { ...call, status } : call,
-        ),
-      };
-    }
-    case 'plan_card':
-      return { ...message, planCard: event.card };
-    case 'pills':
-      return { ...message, pills: event.items };
-    case 'notice':
-      return { ...message, notice: event.message };
-    case 'sources':
-      return { ...message, sources: event.items };
-    case 'artifact':
-      return { ...message, artifacts: [...(message.artifacts ?? []), event.artifact] };
-    case 'map_pins':
-    case 'done':
-      return message;
-  }
-}
-
-function mergePins(existing: ReviewPin[], incoming: ReviewPin[]): ReviewPin[] {
-  const names = new Set(incoming.map((pin) => pin.name));
-  return [...existing.filter((pin) => !names.has(pin.name)), ...incoming];
-}
-
-function applyMapPins(
-  messages: ChatMessage[],
-  cardId: string,
-  incoming: ReviewPin[],
-): ChatMessage[] {
-  return messages.map((message) =>
-    message.planCard?.id === cardId
-      ? {
-          ...message,
-          planCard: {
-            ...message.planCard,
-            reviewPins: mergePins(message.planCard.reviewPins, incoming),
-          },
-        }
-      : message,
   );
 }
 
@@ -382,19 +308,7 @@ function ChatView({ conversation }: { conversation: Conversation | undefined }) 
         id = (await createConversation(text)).id;
         setConversationId(id);
       }
-      setMessages((previous) => [
-        ...previous,
-        {
-          role: 'user',
-          text,
-          toolCalls: [],
-          planCard: null,
-          pills: [],
-          sources: [],
-          artifacts: [],
-        },
-        emptyAssistant(),
-      ]);
+      setMessages((previous) => [...previous, newMessage('user', text), newMessage('assistant')]);
       appended = true;
       for await (const event of sendMessage(id, text, action, controller.signal)) {
         if (event.type === 'map_pins') {
