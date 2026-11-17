@@ -7,6 +7,6 @@ COPY web/ ./
 RUN pnpm run build
 
 FROM nginx:alpine
-COPY web/nginx.conf /etc/nginx/templates/default.conf.template
+COPY web/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 EXPOSE 80
