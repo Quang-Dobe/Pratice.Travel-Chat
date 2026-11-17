@@ -1,9 +1,9 @@
-import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Leg, PlanCard } from '../api/api';
+import { makeCard as makeBaseCard } from '../test/planCard';
 import { PlanMap } from './PlanMap';
 
 const { fitBounds, fakeMap, layerBehavior } = vi.hoisted(() => {
@@ -53,8 +53,6 @@ vi.mock('react-map-gl/maplibre', () => ({
   useMap: () => ({ current: fakeMap }),
 }));
 
-afterEach(cleanup);
-
 beforeEach(() => {
   layerBehavior.throws = false;
   fitBounds.mockReset();
@@ -75,9 +73,7 @@ const unplacedLeg: Leg = {
 };
 
 function makeCard(overrides: Partial<PlanCard> = {}): PlanCard {
-  return {
-    id: 'card1',
-    status: 'open',
+  return makeBaseCard({
     flights: [
       {
         id: 'f1',
@@ -120,7 +116,6 @@ function makeCard(overrides: Partial<PlanCard> = {}): PlanCard {
         location: null,
       },
     ],
-    picked: { flightId: 'f1', hotelId: 'h1' },
     days: [
       {
         date: '2026-11-01',
@@ -130,17 +125,9 @@ function makeCard(overrides: Partial<PlanCard> = {}): PlanCard {
         stops: [{ name: 'Gardens', lat: 1.28, lon: 103.86 }],
       },
     ],
-    budget: {
-      flightUsd: 500,
-      hotelUsd: 300,
-      dailyUsd: 90,
-      totalUsd: 890,
-      budgetUsd: 2000,
-      overBudget: false,
-    },
     reviewPins: [{ name: 'Ramen Bar', kind: 'restaurant', lat: 1.3, lon: 103.8 }],
     ...overrides,
-  };
+  });
 }
 
 const noPoints = makeCard({

@@ -1,5 +1,4 @@
-import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
 import { setupServer } from 'msw/node';
@@ -12,6 +11,7 @@ import {
   type Message,
   type PlanCard,
 } from '../api/api';
+import { makeCard } from '../test/planCard';
 import { ChatPage } from './ChatPage';
 
 vi.mock('../components/PlanMap', () => ({
@@ -54,7 +54,6 @@ const server = setupServer();
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
 afterEach(() => {
-  cleanup();
   server.resetHandlers();
 });
 afterAll(() => server.close());
@@ -112,61 +111,6 @@ const eventStream = (frames: Uint8Array[]) =>
     }),
     { headers: { 'Content-Type': 'text/event-stream' } },
   );
-
-function makeCard(overrides: Partial<PlanCard> = {}): PlanCard {
-  return {
-    id: 'card1',
-    status: 'open',
-    flights: [
-      {
-        id: 'f1',
-        summary: 'Flight one',
-        priceUsd: 500,
-        deepLink: 'https://example.com/f1',
-        legs: [],
-        location: null,
-      },
-      {
-        id: 'f2',
-        summary: 'Flight two',
-        priceUsd: 650,
-        deepLink: 'https://example.com/f2',
-        legs: [],
-        location: null,
-      },
-    ],
-    hotels: [
-      {
-        id: 'h1',
-        summary: 'Hotel one',
-        priceUsd: 300,
-        deepLink: 'https://example.com/h1',
-        legs: [],
-        location: null,
-      },
-      {
-        id: 'h2',
-        summary: 'Hotel two',
-        priceUsd: 700,
-        deepLink: 'https://example.com/h2',
-        legs: [],
-        location: null,
-      },
-    ],
-    picked: { flightId: 'f1', hotelId: 'h1' },
-    days: [{ date: '2026-11-01', activities: ['Temple'], weather: '18C', costUsd: 90, stops: [] }],
-    reviewPins: [],
-    budget: {
-      flightUsd: 500,
-      hotelUsd: 300,
-      dailyUsd: 90,
-      totalUsd: 890,
-      budgetUsd: 2000,
-      overBudget: false,
-    },
-    ...overrides,
-  };
-}
 
 const approvalPills = [
   { text: 'Approve', action: 'approve' },
