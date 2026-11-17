@@ -268,13 +268,7 @@ public sealed class MapsProxyTests : IClassFixture<GatewayFactory>
         HttpMethod method,
         string path)
     {
-        var signIn = $"{GatewayFactory.TestEndpointsStartupFilter.SignInPath}?oid=oid-1&uid={Guid.NewGuid():D}";
-        using var signInResponse = await client.GetAsync(
-            new Uri(signIn, UriKind.Relative),
-            TestContext.Current.CancellationToken);
-        var cookie = string.Join(
-            "; ",
-            signInResponse.Headers.GetValues("Set-Cookie").Select(header => header.Split(';')[0]));
+        var cookie = await GatewayFactory.SignInCookieAsync(client, "oid-1", Guid.NewGuid().ToString("D"));
 
         var request = new HttpRequestMessage(method, new Uri(path, UriKind.Relative));
         request.Headers.Add("Cookie", cookie);

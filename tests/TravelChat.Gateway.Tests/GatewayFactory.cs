@@ -132,6 +132,12 @@ public sealed class GatewayFactory : WebApplicationFactory<Program>
 
     public async Task<string> CreateSessionCookieAsync(string? oid, string? uid)
     {
+        using var client = CreateGatewayClient();
+        return await SignInCookieAsync(client, oid, uid);
+    }
+
+    public static async Task<string> SignInCookieAsync(HttpClient client, string? oid, string? uid)
+    {
         var query = new List<string>();
         if (oid is not null)
         {
@@ -143,7 +149,6 @@ public sealed class GatewayFactory : WebApplicationFactory<Program>
             query.Add($"uid={Uri.EscapeDataString(uid)}");
         }
 
-        using var client = CreateGatewayClient();
         using var request = new HttpRequestMessage(
             HttpMethod.Get,
             new Uri($"{TestEndpointsStartupFilter.SignInPath}?{string.Join('&', query)}", UriKind.Relative));
