@@ -26,6 +26,16 @@ public sealed record PublicJwk(
     [property: JsonPropertyName("alg")] string Alg,
     [property: JsonPropertyName("use")] string Use);
 
+public static class TokenIssuerRegistration
+{
+    public static IServiceCollection AddTokenIssuer(this IServiceCollection services)
+    {
+        services.AddOptions<InternalTokenOptions>().BindConfiguration(InternalTokenOptions.SectionName);
+        services.AddSingleton<TokenIssuer>();
+        return services;
+    }
+}
+
 public sealed class TokenIssuer : IDisposable
 {
     private readonly RSA _rsa;

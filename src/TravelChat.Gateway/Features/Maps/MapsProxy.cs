@@ -27,8 +27,11 @@ public static class MapsProxy
     public const string PublicPrefix = "/api/maps";
     public const string KeyParameter = "apiKey";
 
-    public static IReverseProxyBuilder AddMapsTransform(this IReverseProxyBuilder builder) =>
-        builder.AddTransforms(context =>
+    public static IReverseProxyBuilder AddMapsProxy(this IReverseProxyBuilder builder)
+    {
+        builder.Services.AddOptions<MapsOptions>().BindConfiguration(MapsOptions.SectionName);
+
+        return builder.AddTransforms(context =>
         {
             if (RouteIds.Contains(context.Route.RouteId))
             {
@@ -37,6 +40,7 @@ public static class MapsProxy
                 context.AddResponseTransform(response => ApplyResponseAsync(response, key));
             }
         });
+    }
 
     private static ValueTask ApplyRequestAsync(RequestTransformContext context, string key)
     {

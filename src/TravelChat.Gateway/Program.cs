@@ -8,18 +8,13 @@ using TravelChat.ServiceDefaults;
 var builder = WebApplication.CreateBuilder(args);
 builder.AddServiceDefaults();
 
-builder.Services.Configure<InternalTokenOptions>(
-    builder.Configuration.GetSection(InternalTokenOptions.SectionName));
-builder.Services.AddSingleton<TokenIssuer>();
-builder.Services.Configure<MapsOptions>(
-    builder.Configuration.GetSection(MapsOptions.SectionName));
-
+builder.Services.AddTokenIssuer();
 builder.Services.AddGatewayAuth(builder.Configuration);
 builder.Services
     .AddReverseProxy()
     .LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"))
     .AddTokenTransform()
-    .AddMapsTransform();
+    .AddMapsProxy();
 
 var app = builder.Build();
 app.UseAuthentication();
