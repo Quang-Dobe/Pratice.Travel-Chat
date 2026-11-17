@@ -5,7 +5,7 @@ import RamenDiningRounded from '@mui/icons-material/RamenDiningRounded';
 import SavingsRounded from '@mui/icons-material/SavingsRounded';
 import { Box, Card, CardActionArea, Typography } from '@mui/material';
 import type { ReactNode } from 'react';
-import { brandGradient } from '../theme';
+import { BrandMark } from './BrandMark';
 
 type Starter = { icon: ReactNode; title: string; prompt: string };
 
@@ -45,21 +45,7 @@ export function EmptyState({ name, disabled, onPick }: EmptyStateProps) {
       sx={{ flexGrow: 1, display: 'grid', placeItems: 'center', px: 3, py: 4, overflowY: 'auto' }}
     >
       <Box sx={{ width: '100%', maxWidth: 720, textAlign: 'center' }}>
-        <Box
-          sx={{
-            mx: 'auto',
-            mb: 2,
-            width: 56,
-            height: 56,
-            borderRadius: 4,
-            display: 'grid',
-            placeItems: 'center',
-            color: '#fff',
-            background: brandGradient,
-          }}
-        >
-          <AutoAwesomeRounded />
-        </Box>
+        <BrandMark size={56} radius={4} icon={<AutoAwesomeRounded />} sx={{ mx: 'auto', mb: 2 }} />
         <Typography variant="h4" component="h1">
           {firstName ? `Where to next, ${firstName}?` : 'Where to next?'}
         </Typography>

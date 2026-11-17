@@ -21,7 +21,7 @@ import {
 import { useState } from 'react';
 import { NavLink, useNavigate } from 'react-router';
 import { type AppData, logout } from '../api/api';
-import { brandGradient } from '../theme';
+import { BrandMark } from './BrandMark';
 import { initials } from './initials';
 import { ProfileDialog } from './ProfileDialog';
 
@@ -57,19 +57,7 @@ export function Sidebar({ me, conversations }: AppData) {
       sx={{ display: 'flex', flexDirection: 'column', height: '100%', p: 2, gap: 2 }}
     >
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, px: 0.5 }}>
-        <Box
-          sx={{
-            width: 36,
-            height: 36,
-            borderRadius: 2.5,
-            display: 'grid',
-            placeItems: 'center',
-            color: '#fff',
-            background: brandGradient,
-          }}
-        >
-          <FlightTakeoffRounded fontSize="small" />
-        </Box>
+        <BrandMark size={36} radius={2.5} icon={<FlightTakeoffRounded fontSize="small" />} />
         <Typography variant="h6" component="span" sx={{ flexGrow: 1 }}>
           Travel Chat
         </Typography>
