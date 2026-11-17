@@ -1,5 +1,4 @@
 using System.Net.Http.Headers;
-using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Mvc;
 using TravelChat.Gateway.Features.Auth;
 using TravelChat.Gateway.Features.Token;
@@ -46,10 +45,6 @@ public static class TokenTransform
 
 public static class ApiAuthStatusCodes
 {
-    public const string PolicyName = "api";
-
-    private static readonly PathString ApiPrefix = new("/api");
-
     public static ValueTask WriteProblemAsync(HttpContext http, int status)
     {
         http.Response.StatusCode = status;
@@ -63,27 +58,7 @@ public static class ApiAuthStatusCodes
     public static IEndpointRouteBuilder MapApiFallback(this IEndpointRouteBuilder app)
     {
         app.Map("/api/{**rest}", () => TypedResults.Problem(statusCode: StatusCodes.Status404NotFound))
-            .RequireAuthorization(PolicyName);
+            .RequireAuthorization(AuthSetup.ApiPolicy);
         return app;
-    }
-
-    public static IServiceCollection AddApiAuthStatusCodes(this IServiceCollection services)
-    {
-        services.PostConfigure<CookieAuthenticationOptions>(CookieAuthenticationDefaults.AuthenticationScheme, options =>
-        {
-            var existingLogin = options.Events.OnRedirectToLogin;
-            options.Events.OnRedirectToLogin = context =>
-                context.Request.Path.StartsWithSegments(ApiPrefix)
-                    ? WriteProblemAsync(context.HttpContext, StatusCodes.Status401Unauthorized).AsTask()
-                    : existingLogin(context);
-
-            var existingDenied = options.Events.OnRedirectToAccessDenied;
-            options.Events.OnRedirectToAccessDenied = context =>
-                context.Request.Path.StartsWithSegments(ApiPrefix)
-                    ? WriteProblemAsync(context.HttpContext, StatusCodes.Status403Forbidden).AsTask()
-                    : existingDenied(context);
-        });
-
-        return services;
     }
 }

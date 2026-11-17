@@ -5,14 +5,13 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
-using Microsoft.IdentityModel.Protocols.OpenIdConnect;
 using TravelChat.Gateway.Features.Token;
 
 namespace TravelChat.Gateway.Features.Auth;
 
 public sealed record UserMeResponse([property: JsonPropertyName("id")] Guid Id);
 
-public sealed partial class InviteCheck
+public sealed partial class InviteCheck(HttpClient http, TokenIssuer issuer, ILogger<InviteCheck> logger)
 {
     public const string OidClaim = "oid";
     public const string UidClaim = "uid";
@@ -21,17 +20,6 @@ public sealed partial class InviteCheck
     private const string MappedOidClaim = "http://schemas.microsoft.com/identity/claims/objectidentifier";
 
     private static readonly Uri MePath = new("/users/me", UriKind.Relative);
-
-    private readonly HttpClient _http;
-    private readonly TokenIssuer _issuer;
-    private readonly ILogger<InviteCheck> _logger;
-
-    public InviteCheck(HttpClient http, TokenIssuer issuer, ILogger<InviteCheck> logger)
-    {
-        _http = http;
-        _issuer = issuer;
-        _logger = logger;
-    }
 
     public async Task<Guid?> CheckAsync(string? oid, CancellationToken ct)
     {
@@ -44,9 +32,9 @@ public sealed partial class InviteCheck
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, MePath);
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _issuer.Mint(oid));
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", issuer.Mint(oid));
 
-            using var response = await _http.SendAsync(request, ct);
+            using var response = await http.SendAsync(request, ct);
             if (response.StatusCode != HttpStatusCode.OK)
             {
                 LogDenied($"q-user answered {(int)response.StatusCode}");
@@ -93,45 +81,4 @@ public sealed partial class InviteCheck
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Sign-in denied: {Reason}")]
     private partial void LogDenied(string reason);
-}
-
-public static class InviteCheckRegistration
-{
-    private const string UserServiceKey = "ReverseProxy:Clusters:q-user:Destinations:primary:Address";
-
-    public static Uri UserServiceAddress(IConfiguration configuration) =>
-        new(configuration[UserServiceKey]
-            ?? throw new InvalidOperationException($"{UserServiceKey} is not configured."));
-
-    public static IServiceCollection AddInviteCheck(this IServiceCollection services, IConfiguration configuration)
-    {
-        var address = UserServiceAddress(configuration);
-        services.AddHttpClient<InviteCheck>(client =>
-        {
-            client.BaseAddress = address;
-            client.Timeout = TimeSpan.FromSeconds(3);
-        });
-
-        services.PostConfigure<OpenIdConnectOptions>(OpenIdConnectDefaults.AuthenticationScheme, options =>
-        {
-            options.SaveTokens = false;
-            options.ResponseType = OpenIdConnectResponseType.Code;
-
-            var existing = options.Events.OnTokenValidated;
-            options.Events.OnTokenValidated = async context =>
-            {
-                await existing(context);
-                if (context.Result?.Handled == true)
-                {
-                    return;
-                }
-
-                await context.HttpContext.RequestServices
-                    .GetRequiredService<InviteCheck>()
-                    .OnTokenValidatedAsync(context);
-            };
-        });
-
-        return services;
-    }
 }

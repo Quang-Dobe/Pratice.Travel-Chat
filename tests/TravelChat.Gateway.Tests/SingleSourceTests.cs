@@ -35,7 +35,7 @@ public sealed class SingleSourceTests
             })
             .Build();
 
-        InviteCheckRegistration.UserServiceAddress(configuration).ShouldBe(new Uri("http://q-user-test:9090"));
+        AuthSetup.UserServiceAddress(configuration).ShouldBe(new Uri("http://q-user-test:9090"));
     }
 
     [Fact]
