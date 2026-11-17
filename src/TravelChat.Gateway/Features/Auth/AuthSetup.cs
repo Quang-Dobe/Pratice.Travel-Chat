@@ -3,17 +3,13 @@ using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.Identity.Web;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
-using TravelChat.Gateway.Features.Proxy;
+using TravelChat.Gateway.Features.Api;
 
 namespace TravelChat.Gateway.Features.Auth;
 
 public static class AuthSetup
 {
-    public const string ApiPolicy = "api";
-
     private const string UserServiceKey = "ReverseProxy:Clusters:q-user:Destinations:primary:Address";
-
-    private static readonly PathString ApiPrefix = new("/api");
 
     public static Uri UserServiceAddress(IConfiguration configuration) =>
         new(configuration[UserServiceKey]
@@ -39,14 +35,14 @@ public static class AuthSetup
 
                 var existingLogin = options.Events.OnRedirectToLogin;
                 options.Events.OnRedirectToLogin = context =>
-                    context.Request.Path.StartsWithSegments(ApiPrefix)
-                        ? ApiAuthStatusCodes.WriteProblemAsync(context.HttpContext, StatusCodes.Status401Unauthorized).AsTask()
+                    context.Request.Path.StartsWithSegments(ApiRoutes.Prefix)
+                        ? ApiProblems.WriteAsync(context.HttpContext, StatusCodes.Status401Unauthorized).AsTask()
                         : existingLogin(context);
 
                 var existingDenied = options.Events.OnRedirectToAccessDenied;
                 options.Events.OnRedirectToAccessDenied = context =>
-                    context.Request.Path.StartsWithSegments(ApiPrefix)
-                        ? ApiAuthStatusCodes.WriteProblemAsync(context.HttpContext, StatusCodes.Status403Forbidden).AsTask()
+                    context.Request.Path.StartsWithSegments(ApiRoutes.Prefix)
+                        ? ApiProblems.WriteAsync(context.HttpContext, StatusCodes.Status403Forbidden).AsTask()
                         : existingDenied(context);
             });
 
@@ -79,7 +75,7 @@ public static class AuthSetup
 
         services.AddAuthorizationBuilder()
             .SetFallbackPolicy(new AuthorizationPolicyBuilder().RequireAuthenticatedUser().Build())
-            .AddPolicy(ApiPolicy, policy => policy
+            .AddPolicy(ApiRoutes.Policy, policy => policy
                 .AddAuthenticationSchemes(CookieAuthenticationDefaults.AuthenticationScheme)
                 .RequireAuthenticatedUser());
 

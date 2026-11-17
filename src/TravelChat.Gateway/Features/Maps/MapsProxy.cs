@@ -1,6 +1,6 @@
 using System.Text;
 using Microsoft.Extensions.Options;
-using TravelChat.Gateway.Features.Proxy;
+using TravelChat.Gateway.Features.Api;
 using Yarp.ReverseProxy.Transforms;
 
 namespace TravelChat.Gateway.Features.Maps;
@@ -32,19 +32,19 @@ public static class MapsProxy
         {
             if (RouteIds.Contains(context.Route.RouteId))
             {
-                context.AddRequestTransform(ApplyRequestAsync);
-                context.AddResponseTransform(ApplyResponseAsync);
+                var key = context.Services.GetRequiredService<IOptions<MapsOptions>>().Value.ApiKey;
+                context.AddRequestTransform(request => ApplyRequestAsync(request, key));
+                context.AddResponseTransform(response => ApplyResponseAsync(response, key));
             }
         });
 
-    public static ValueTask ApplyRequestAsync(RequestTransformContext context)
+    private static ValueTask ApplyRequestAsync(RequestTransformContext context, string key)
     {
         var http = context.HttpContext;
-        var key = http.RequestServices.GetRequiredService<IOptions<MapsOptions>>().Value.ApiKey;
 
         if (string.IsNullOrWhiteSpace(key))
         {
-            return ApiAuthStatusCodes.WriteProblemAsync(http, StatusCodes.Status503ServiceUnavailable);
+            return ApiProblems.WriteAsync(http, StatusCodes.Status503ServiceUnavailable);
         }
 
         context.Query.Collection.Remove(KeyParameter);
@@ -52,7 +52,7 @@ public static class MapsProxy
         return ValueTask.CompletedTask;
     }
 
-    public static async ValueTask ApplyResponseAsync(ResponseTransformContext context)
+    private static async ValueTask ApplyResponseAsync(ResponseTransformContext context, string key)
     {
         var upstream = context.ProxyResponse;
         if (upstream is null)
@@ -61,7 +61,6 @@ public static class MapsProxy
         }
 
         var http = context.HttpContext;
-        var key = http.RequestServices.GetRequiredService<IOptions<MapsOptions>>().Value.ApiKey;
         var publicBase = $"{http.Request.Scheme}://{http.Request.Host.Value}{PublicPrefix}";
 
         var location = upstream.Headers.Location?.OriginalString;
@@ -82,7 +81,7 @@ public static class MapsProxy
             http.Response.Headers.Remove("Content-Encoding");
             http.Response.Headers.Remove("Content-Length");
             http.Response.Headers.Remove("Content-Type");
-            await ApiAuthStatusCodes.WriteProblemAsync(http, StatusCodes.Status502BadGateway);
+            await ApiProblems.WriteAsync(http, StatusCodes.Status502BadGateway);
             return;
         }
 

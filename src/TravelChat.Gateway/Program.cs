@@ -1,3 +1,4 @@
+using TravelChat.Gateway.Features.Api;
 using TravelChat.Gateway.Features.Auth;
 using TravelChat.Gateway.Features.Maps;
 using TravelChat.Gateway.Features.Proxy;
