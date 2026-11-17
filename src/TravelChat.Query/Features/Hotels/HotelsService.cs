@@ -82,19 +82,9 @@ public sealed class HotelsService(IHttpClientFactory httpClients, CachedFetch ca
 
     private static HotelLocation? ReadLocation(JsonElement property)
     {
-        if (!property.TryGetProperty("gps_coordinates", out var gps)
-            || gps.ValueKind != JsonValueKind.Object
-            || !gps.TryGetProperty("latitude", out var latitude)
-            || latitude.ValueKind != JsonValueKind.Number
-            || !gps.TryGetProperty("longitude", out var longitude)
-            || longitude.ValueKind != JsonValueKind.Number)
-        {
-            return null;
-        }
-
-        var lat = latitude.GetDouble();
-        var lon = longitude.GetDouble();
-        return lat is >= -90 and <= 90 && lon is >= -180 and <= 180 ? new HotelLocation(lat, lon) : null;
+        return property.TryGetProperty("gps_coordinates", out var gps) && gps.LatLon("latitude", "longitude") is { } point
+            ? new HotelLocation(point.Lat, point.Lon)
+            : null;
     }
 
     private static decimal? StayTotal(JsonElement property, int nights)

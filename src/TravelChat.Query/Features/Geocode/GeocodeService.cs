@@ -76,17 +76,14 @@ public sealed class GeocodeService(IHttpClientFactory httpClients, CachedFetch c
     internal static Coordinates[] MapCoordinates(string body)
     {
         using var document = JsonDocument.Parse(body);
-        if (!document.RootElement.TryGetProperty("results", out var results)
-            || results.ValueKind != JsonValueKind.Array
-            || results.GetArrayLength() == 0)
+        if (document.RootElement.FirstResult() is not { } first)
         {
             return [];
         }
 
-        var first = results[0];
         var lat = first.RequireNumber("lat");
         var lon = first.RequireNumber("lon");
-        return lat is >= -90 and <= 90 && lon is >= -180 and <= 180 ? [new Coordinates(lat, lon)] : [];
+        return JsonReading.IsLatLon(lat, lon) ? [new Coordinates(lat, lon)] : [];
     }
 
     internal sealed record Coordinates(double Lat, double Lon);
