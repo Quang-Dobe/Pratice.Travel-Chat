@@ -214,14 +214,6 @@ function ChatView({ conversation }: { conversation: Conversation | undefined }) 
             onChange={setDraft}
             onSend={() => submit(draft.trim())}
           />
-          <Typography
-            variant="caption"
-            color="text.secondary"
-            component="div"
-            sx={{ textAlign: 'center', mt: 1 }}
-          >
-            Enter to send · Shift + Enter for a new line
-          </Typography>
         </Box>
       </Box>
     </Box>
