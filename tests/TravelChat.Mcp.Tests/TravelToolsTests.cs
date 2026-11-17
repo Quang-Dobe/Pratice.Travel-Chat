@@ -145,6 +145,80 @@ public sealed class TravelToolsTests
     }
 
     [Fact]
+    public async Task ValidationProblemWithNullErrorsUsesTheTitle()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var tools = ToolsReturning(HttpStatusCode.BadRequest, "{\"errors\":null,\"title\":\"t\"}");
+
+        var result = await tools.FlightsSearch("LIS", "JFK", "2026-11-01", "2026-11-05", 1, ct);
+
+        result.IsError.ShouldBe(true);
+        TextOf(result).ShouldBe("Flights request was invalid: t Fix the arguments and try again.");
+    }
+
+    [Fact]
+    public async Task BadRequestWithNullBodyIsUnavailableRightNow()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var tools = ToolsReturning(HttpStatusCode.BadRequest, "null");
+
+        var result = await tools.FlightsSearch("LIS", "JFK", "2026-11-01", "2026-11-05", 1, ct);
+
+        result.IsError.ShouldBe(true);
+        TextOf(result).ShouldBe("Flights data is unavailable right now.");
+    }
+
+    [Fact]
+    public async Task ValidationProblemWithNullMessagesNamesTheField()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var tools = ToolsReturning(HttpStatusCode.BadRequest, "{\"errors\":{\"a\":null}}");
+
+        var result = await tools.FlightsSearch("LIS", "JFK", "2026-11-01", "2026-11-05", 1, ct);
+
+        result.IsError.ShouldBe(true);
+        TextOf(result).ShouldBe("Flights request was invalid: a:  Fix the arguments and try again.");
+    }
+
+    [Fact]
+    public async Task ValidationProblemFromQueryNamesTheFields()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var tools = ToolsReturning(
+            HttpStatusCode.BadRequest,
+            "{\"type\":\"https://tools.ietf.org/html/rfc9110#section-15.5.1\",\"title\":\"One or more validation errors occurred.\",\"status\":400,\"errors\":{\"origin\":[\"origin must be a 3-letter IATA code.\"]},\"traceId\":\"00-abc-def-01\"}",
+            "application/problem+json");
+
+        var result = await tools.FlightsSearch("LIS", "JFK", "2026-11-01", "2026-11-05", 1, ct);
+
+        result.IsError.ShouldBe(true);
+        TextOf(result).ShouldBe(
+            "Flights request was invalid: origin: origin must be a 3-letter IATA code. Fix the arguments and try again.");
+    }
+
+    [Fact]
+    public async Task TimeoutIsUnavailableRightNow()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var tools = ToolsWith(new FakeHandler(_ => throw new TaskCanceledException("timed out")));
+
+        var result = await tools.FlightsSearch("LIS", "JFK", "2026-11-01", "2026-11-05", 1, ct);
+
+        result.IsError.ShouldBe(true);
+        TextOf(result).ShouldBe("Flights data is unavailable right now.");
+    }
+
+    [Fact]
+    public async Task CallerCancellationPropagates()
+    {
+        var tools = ToolsReturning(HttpStatusCode.OK, "{\"status\":\"ok\",\"message\":\"\",\"data\":null}");
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        await Should.ThrowAsync<OperationCanceledException>(
+            () => tools.FlightsSearch("LIS", "JFK", "2026-11-01", "2026-11-05", 1, cts.Token));
+    }
+    [Fact]
     public async Task ServerErrorStillMapsToUnavailableRightNow()
     {
         var ct = TestContext.Current.CancellationToken;

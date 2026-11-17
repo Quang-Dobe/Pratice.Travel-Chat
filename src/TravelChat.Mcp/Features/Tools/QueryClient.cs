@@ -82,8 +82,8 @@ public sealed class QueryClient(HttpClient http)
             }
 
             var parts = problem.Errors
-                .Select(field => $"{field.Key}: {string.Join(' ', field.Value ?? [])}")
-                .ToList();
+                ?.Select(field => $"{field.Key}: {string.Join(' ', field.Value ?? [])}")
+                .ToList() ?? [];
             if (parts.Count == 0 && (problem.Detail ?? problem.Title) is { } text)
             {
                 parts = [text];
