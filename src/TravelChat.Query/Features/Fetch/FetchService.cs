@@ -36,7 +36,7 @@ public sealed partial class FetchService(IHttpClientFactory httpClients, CachedF
             ClientName,
             CacheKey(url),
             s_ttl,
-            (_, token) => FetchAsync(url, token),
+            token => FetchAsync(url, token),
             ct);
     }
 

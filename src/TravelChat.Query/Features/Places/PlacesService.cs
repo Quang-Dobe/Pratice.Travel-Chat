@@ -54,26 +54,20 @@ public sealed class PlacesService(IHttpClientFactory httpClients, CachedFetch ca
     {
         var categories = CategoriesFor(interests);
         var query = $"{CacheVersion}|{CachedFetch.Normalise(city)}|{string.Join(',', categories)}";
-        return await cachedFetch.GetAsync(
+        return await cachedFetch.GetWithKeyAsync(
             ClientName,
             query,
             s_ttl,
             (apiKey, token) => FetchAsync(city.Trim(), categories, apiKey, token),
-            ct,
-            requiresKey: true);
+            ct);
     }
 
     private async Task<IReadOnlyList<Attraction>> FetchAsync(
         string city,
         IReadOnlyList<string> categories,
-        string? apiKey,
+        string apiKey,
         CancellationToken ct)
     {
-        if (apiKey is null)
-        {
-            throw new ProviderFailureException(ProviderStatus.Unavailable, "no key set");
-        }
-
         var http = httpClients.CreateClient(ClientName);
         var key = Uri.EscapeDataString(apiKey);
 

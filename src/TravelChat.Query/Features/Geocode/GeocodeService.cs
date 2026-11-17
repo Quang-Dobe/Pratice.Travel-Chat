@@ -51,13 +51,12 @@ public sealed class GeocodeService(IHttpClientFactory httpClients, CachedFetch c
         await gate.WaitAsync(ct);
         try
         {
-            return await cachedFetch.GetAsync(
+            return await cachedFetch.GetWithKeyAsync(
                 ClientName,
                 CachedFetch.Normalise(place),
                 s_ttl,
                 (apiKey, token) => FetchAsync(place.Trim(), apiKey, token),
-                ct,
-                requiresKey: true);
+                ct);
         }
         finally
         {
@@ -65,13 +64,8 @@ public sealed class GeocodeService(IHttpClientFactory httpClients, CachedFetch c
         }
     }
 
-    private async Task<IReadOnlyList<Coordinates>> FetchAsync(string place, string? apiKey, CancellationToken ct)
+    private async Task<IReadOnlyList<Coordinates>> FetchAsync(string place, string apiKey, CancellationToken ct)
     {
-        if (apiKey is null)
-        {
-            throw new ProviderFailureException(ProviderStatus.Unavailable, "no key set");
-        }
-
         var uri = new Uri(
             $"{GeocodeUrl}?text={Uri.EscapeDataString(place)}&limit=1&format=json&apiKey={Uri.EscapeDataString(apiKey)}",
             UriKind.Absolute);

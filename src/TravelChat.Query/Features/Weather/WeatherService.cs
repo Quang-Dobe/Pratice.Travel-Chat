@@ -37,7 +37,7 @@ public sealed class WeatherService(IHttpClientFactory httpClients, CachedFetch c
             ClientName,
             query,
             s_ttl,
-            (_, token) => FetchAsync(requestedCity, first, last, token),
+            token => FetchAsync(requestedCity, first, last, token),
             ct);
     }
 

@@ -15,13 +15,12 @@ public sealed class SearchService(IHttpClientFactory httpClients, CachedFetch ca
     private static readonly TimeSpan s_ttl = TimeSpan.FromHours(24);
 
     public async Task<ProviderResult<IReadOnlyList<SearchResult>>> SearchAsync(string query, CancellationToken ct) =>
-        await cachedFetch.GetAsync(
+        await cachedFetch.GetWithKeyAsync(
             ClientName,
             CachedFetch.Normalise(query),
             s_ttl,
             (apiKey, token) => FetchAsync(query.Trim(), apiKey, token),
-            ct,
-            requiresKey: true);
+            ct);
 
     internal static IReadOnlyList<SearchResult> MapResults(string body)
     {
@@ -77,13 +76,8 @@ public sealed class SearchService(IHttpClientFactory httpClients, CachedFetch ca
             ? uri.AbsoluteUri
             : null;
 
-    private async Task<IReadOnlyList<SearchResult>> FetchAsync(string query, string? apiKey, CancellationToken ct)
+    private async Task<IReadOnlyList<SearchResult>> FetchAsync(string query, string apiKey, CancellationToken ct)
     {
-        if (apiKey is null)
-        {
-            throw new ProviderFailureException(ProviderStatus.Unavailable, "no key set");
-        }
-
         var uri = new Uri(
             $"{SearchUrl}?engine=google&q={Uri.EscapeDataString(query)}&hl=en&api_key={Uri.EscapeDataString(apiKey)}",
             UriKind.Absolute);

@@ -31,13 +31,12 @@ public sealed class HotelsService(IHttpClientFactory httpClients, CachedFetch ca
             CachedFetch.Normalise(checkOut),
             travellers.ToString(CultureInfo.InvariantCulture));
 
-        return await cachedFetch.GetAsync(
+        return await cachedFetch.GetWithKeyAsync(
             ClientName,
             query,
             s_ttl,
             (apiKey, token) => FetchAsync(city.Trim(), checkIn, checkOut, travellers, apiKey, token),
-            ct,
-            requiresKey: true);
+            ct);
     }
 
     internal static IReadOnlyList<HotelOption> MapOptions(string body, int nights)
@@ -161,14 +160,9 @@ public sealed class HotelsService(IHttpClientFactory httpClients, CachedFetch ca
         DateOnly checkIn,
         DateOnly checkOut,
         int travellers,
-        string? apiKey,
+        string apiKey,
         CancellationToken ct)
     {
-        if (apiKey is null)
-        {
-            throw new ProviderFailureException(ProviderStatus.Unavailable, "no key set");
-        }
-
         var uri = new Uri(
             $"{SearchUrl}?engine=google_hotels&q={Uri.EscapeDataString(city)}"
             + $"&check_in_date={CachedFetch.Normalise(checkIn)}&check_out_date={CachedFetch.Normalise(checkOut)}"

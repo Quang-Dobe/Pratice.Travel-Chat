@@ -60,13 +60,12 @@ public sealed class FlightsService(IHttpClientFactory httpClients, CachedFetch c
             CachedFetch.Normalise(returnDate),
             travellers.ToString(CultureInfo.InvariantCulture));
 
-        return await cachedFetch.GetAsync(
+        return await cachedFetch.GetWithKeyAsync(
             ClientName,
             query,
             s_ttl,
             (apiKey, token) => FetchAsync(originCode, destinationCode, departDate, returnDate, travellers, apiKey, token),
-            ct,
-            requiresKey: true);
+            ct);
     }
 
     private static string Airports(string code)
@@ -216,14 +215,9 @@ public sealed class FlightsService(IHttpClientFactory httpClients, CachedFetch c
         DateOnly departDate,
         DateOnly returnDate,
         int travellers,
-        string? apiKey,
+        string apiKey,
         CancellationToken ct)
     {
-        if (apiKey is null)
-        {
-            throw new ProviderFailureException(ProviderStatus.Unavailable, "no key set");
-        }
-
         var uri = new Uri(
             $"{SearchUrl}?engine=google_flights&departure_id={Uri.EscapeDataString(origin)}"
             + $"&arrival_id={Uri.EscapeDataString(destination)}"
