@@ -1,4 +1,5 @@
-import type { Message, ReviewPin, StreamEvent } from '../api/api';
+import type { Message, ReviewPin } from '../api/schemas';
+import type { StreamEvent } from '../api/sse';
 
 export type ChatMessage = Message & { notice?: string };
 

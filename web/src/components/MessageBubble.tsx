@@ -1,7 +1,7 @@
 import TravelExploreRounded from '@mui/icons-material/TravelExploreRounded';
 import { Alert, Avatar, Box, Paper, Typography } from '@mui/material';
 import { keyframes } from '@mui/material/styles';
-import type { Picked, Pill } from '../api/api';
+import type { Picked, Pill } from '../api/schemas';
 import type { ChatMessage } from '../pages/chatMessages';
 import { ExportLink } from './ExportLink';
 import { PlanCard } from './PlanCard';

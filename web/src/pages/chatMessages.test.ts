@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { ArtifactItem, ReviewPin, StreamEvent } from '../api/api';
+import type { ArtifactItem, ReviewPin } from '../api/schemas';
+import type { StreamEvent } from '../api/sse';
 import { makeCard } from '../test/planCard';
 import { applyEvent, applyMapPins, latestCardIndex, newMessage } from './chatMessages';
 

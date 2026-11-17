@@ -1,6 +1,6 @@
 import CheckRounded from '@mui/icons-material/CheckRounded';
 import { Chip, CircularProgress, Stack } from '@mui/material';
-import type { ToolCall } from '../api/api';
+import type { ToolCall } from '../api/schemas';
 
 export function ToolProgress({ toolCalls }: { toolCalls: ToolCall[] }) {
   if (toolCalls.length === 0) {

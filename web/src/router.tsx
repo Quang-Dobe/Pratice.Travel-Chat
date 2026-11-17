@@ -1,13 +1,12 @@
 import { createBrowserRouter, type LoaderFunctionArgs, redirect } from 'react-router';
 import {
   ApiError,
-  type AppData,
-  type Conversation,
   getConversation,
   loadAppData,
   NotInvitedError,
   UnauthorizedError,
 } from './api/api';
+import type { AppData, Conversation } from './api/schemas';
 import { AppErrorBoundary, AppLayout } from './components/AppLayout';
 import { ChatPage } from './pages/ChatPage';
 import { DeniedPage } from './pages/DeniedPage';

@@ -1,4 +1,4 @@
-import type { PlanCard } from '../api/api';
+import type { PlanCard } from '../api/schemas';
 
 export function makeCard(overrides: Partial<PlanCard> = {}): PlanCard {
   return {

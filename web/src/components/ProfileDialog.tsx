@@ -8,7 +8,7 @@ import {
   Stack,
   Typography,
 } from '@mui/material';
-import type { Me } from '../api/api';
+import type { Me } from '../api/schemas';
 import { initials } from './initials';
 
 type ProfileDialogProps = {

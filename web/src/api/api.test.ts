@@ -6,11 +6,10 @@ import {
   getConversation,
   loadAppData,
   NotInvitedError,
-  parseSseFrames,
-  type StreamEvent,
   sendMessage,
   UnauthorizedError,
 } from './api';
+import { parseSseFrames, type StreamEvent } from './sse';
 
 const encoder = new TextEncoder();
 

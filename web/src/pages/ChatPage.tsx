@@ -1,19 +1,16 @@
 import { Alert, Box, Stack, Typography } from '@mui/material';
 import { useEffect, useRef, useState } from 'react';
 import { useLoaderData, useNavigate, useRevalidator, useRouteLoaderData } from 'react-router';
-import {
-  type Action,
-  type AppData,
-  type Conversation,
-  createConversation,
-  getConversation,
-  type Picked,
-  type Pill,
-  type PlanCard as PlanCardData,
-  type StreamEvent,
-  sendMessage,
-  UnauthorizedError,
-} from '../api/api';
+import { createConversation, getConversation, sendMessage, UnauthorizedError } from '../api/api';
+import type {
+  Action,
+  AppData,
+  Conversation,
+  Picked,
+  Pill,
+  PlanCard as PlanCardData,
+} from '../api/schemas';
+import type { StreamEvent } from '../api/sse';
 import { Composer } from '../components/Composer';
 import { EmptyState } from '../components/EmptyState';
 import { initials } from '../components/initials';

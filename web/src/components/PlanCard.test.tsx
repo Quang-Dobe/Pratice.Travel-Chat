@@ -2,7 +2,7 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useEffect, useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import { NO_FORECAST, type Picked, type PlanCard as PlanCardData } from '../api/api';
+import { NO_FORECAST, type Picked, type PlanCard as PlanCardData } from '../api/schemas';
 import { makeCard } from '../test/planCard';
 import { PlanCard } from './PlanCard';
 

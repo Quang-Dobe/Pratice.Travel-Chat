@@ -9,7 +9,7 @@ import {
   Source,
   useMap,
 } from 'react-map-gl/maplibre';
-import type { Leg, PlanCard } from '../api/api';
+import type { Leg, PlanCard } from '../api/schemas';
 
 const HOTEL_COLOR = '#1565c0';
 const STOP_COLOR = '#2e7d32';

@@ -4,13 +4,8 @@ import { HttpResponse, http } from 'msw';
 import { setupServer } from 'msw/node';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import {
-  ApiError,
-  type Conversation,
-  getConversation,
-  type Message,
-  type PlanCard,
-} from '../api/api';
+import { ApiError, getConversation } from '../api/api';
+import type { Conversation, Message, PlanCard } from '../api/schemas';
 import { makeCard } from '../test/planCard';
 import { ChatPage } from './ChatPage';
 

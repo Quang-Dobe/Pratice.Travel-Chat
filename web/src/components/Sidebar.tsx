@@ -20,7 +20,8 @@ import {
 } from '@mui/material';
 import { useState } from 'react';
 import { NavLink, useNavigate } from 'react-router';
-import { type AppData, logout } from '../api/api';
+import { logout } from '../api/api';
+import type { AppData } from '../api/schemas';
 import { BrandMark } from './BrandMark';
 import { initials } from './initials';
 import { ProfileDialog } from './ProfileDialog';

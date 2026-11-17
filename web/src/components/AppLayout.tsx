@@ -1,6 +1,6 @@
 import { Alert, Box, Drawer } from '@mui/material';
 import { Outlet, useRouteLoaderData } from 'react-router';
-import type { AppData } from '../api/api';
+import type { AppData } from '../api/schemas';
 import { Sidebar } from './Sidebar';
 
 const drawerWidth = 280;

@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Leg, PlanCard } from '../api/api';
+import type { Leg, PlanCard } from '../api/schemas';
 import { makeCard as makeBaseCard } from '../test/planCard';
 import { PlanMap } from './PlanMap';
 

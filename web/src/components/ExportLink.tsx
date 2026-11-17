@@ -1,6 +1,6 @@
 import DownloadRounded from '@mui/icons-material/DownloadRounded';
 import { Chip, Link, Stack } from '@mui/material';
-import type { ArtifactItem } from '../api/api';
+import type { ArtifactItem } from '../api/schemas';
 
 type ExportLinkProps = { artifact: ArtifactItem };
 

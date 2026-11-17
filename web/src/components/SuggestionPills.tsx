@@ -1,5 +1,5 @@
 import { Chip, Stack } from '@mui/material';
-import type { Pill } from '../api/api';
+import type { Pill } from '../api/schemas';
 
 type SuggestionPillsProps = {
   items: Pill[];

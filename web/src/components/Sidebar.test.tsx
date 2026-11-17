@@ -4,7 +4,7 @@ import { HttpResponse, http } from 'msw';
 import { setupServer } from 'msw/node';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import type { AppData } from '../api/api';
+import type { AppData } from '../api/schemas';
 import { Sidebar } from './Sidebar';
 
 const data: AppData = {
