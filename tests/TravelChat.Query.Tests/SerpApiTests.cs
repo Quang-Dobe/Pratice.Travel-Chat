@@ -46,6 +46,27 @@ public sealed class SerpApiTests
 
         hash.Length.ShouldBe(12);
         hash.ShouldMatch("^[0-9a-f]{12}$");
+        hash.ShouldBe("3c469e9d6c58");
         SerpApi.ShortHash("token").ShouldBe(hash);
+    }
+
+    [Fact]
+    public void HttpsLinkHttpsReturnsAbsoluteUri() =>
+        SerpApi.HttpsLink("https://a.example/x").ShouldBe("https://a.example/x");
+
+    [Fact]
+    public void IsNoResultsEmptyErrorReturnsFalse()
+    {
+        using var document = JsonDocument.Parse("""{"error":""}""");
+
+        SerpApi.IsNoResults(document.RootElement).ShouldBeFalse();
+    }
+
+    [Fact]
+    public void IsNoResultsWordingIsCaseInsensitive()
+    {
+        using var document = JsonDocument.Parse("""{"error":"NO RESULTS"}""");
+
+        SerpApi.IsNoResults(document.RootElement).ShouldBeTrue();
     }
 }
