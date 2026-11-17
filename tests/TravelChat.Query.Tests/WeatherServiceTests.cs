@@ -1,3 +1,4 @@
+using System.Globalization;
 using Shouldly;
 using TravelChat.Query.Features.Shared;
 using TravelChat.Query.Features.Weather;
@@ -23,7 +24,7 @@ public sealed class WeatherServiceTests
         var handler = new StubHandler(Route);
         var service = CreateService(rig, handler);
 
-        var result = await service.GetForecastAsync("Paris", DateOnly.Parse(start, System.Globalization.CultureInfo.InvariantCulture), DateOnly.Parse(end, System.Globalization.CultureInfo.InvariantCulture), ct);
+        var result = await service.GetForecastAsync("Paris", DateOnly.Parse(start, CultureInfo.InvariantCulture), DateOnly.Parse(end, CultureInfo.InvariantCulture), ct);
 
         handler.Calls.ShouldBe(0);
         result.Status.ShouldBe(ProviderStatus.Ok);

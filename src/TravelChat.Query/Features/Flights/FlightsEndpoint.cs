@@ -44,7 +44,7 @@ public static class FlightsEndpoint
             return TypedResults.ValidationProblem(errors.Errors);
         }
 
-        var result = await flights.SearchAsync(originCode, destinationCode,depart.Value, back.Value, count, ct);
+        var result = await flights.SearchAsync(originCode, destinationCode, depart.Value, back.Value, count, ct);
         return TypedResults.Ok(result);
     }
 
