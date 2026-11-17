@@ -15,7 +15,7 @@ using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
 using Shouldly;
 using TravelChat.User.Data;
-using TravelChat.User.Features.CurrentUser;
+using TravelChat.User.Features.Me;
 
 namespace TravelChat.User.Tests;
 
