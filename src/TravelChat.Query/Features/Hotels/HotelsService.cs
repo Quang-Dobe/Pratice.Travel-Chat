@@ -1,6 +1,4 @@
 using System.Globalization;
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using TravelChat.Query.Features.Shared;
 
@@ -10,7 +8,6 @@ public sealed class HotelsService(IHttpClientFactory httpClients, CachedFetch ca
 {
     public const string ClientName = "hotels__serpapi";
 
-    private const string SearchUrl = "https://serpapi.com/search.json";
     private const int MaxOptions = 5;
     private const string CacheVersion = "v2";
 
@@ -43,14 +40,9 @@ public sealed class HotelsService(IHttpClientFactory httpClients, CachedFetch ca
     {
         using var document = JsonDocument.Parse(body);
         var root = document.RootElement;
-        if (root.OptionalString("error") is { Length: > 0 } error)
+        if (SerpApi.IsNoResults(root))
         {
-            if (IsNoResults(error))
-            {
-                return [];
-            }
-
-            throw new ProviderFailureException(ProviderStatus.Error, "provider returned an error");
+            return [];
         }
 
         var options = new List<HotelOption>();
@@ -76,7 +68,7 @@ public sealed class HotelsService(IHttpClientFactory httpClients, CachedFetch ca
 
     private static HotelOption? ToOption(JsonElement property, int nights)
     {
-        var link = SafeHttpsLink(property.OptionalString("link"));
+        var link = SerpApi.HttpsLink(property.OptionalString("link"));
         var name = property.OptionalString("name");
         var price = StayTotal(property, nights);
         if (link is null || string.IsNullOrWhiteSpace(name) || price is null)
@@ -85,7 +77,7 @@ public sealed class HotelsService(IHttpClientFactory httpClients, CachedFetch ca
         }
 
         var token = property.OptionalString("property_token") ?? link;
-        return new HotelOption(ShortHash(token), Summarise(property, name), price.Value, link, ReadLocation(property));
+        return new HotelOption(SerpApi.ShortHash(token), Summarise(property, name), price.Value, link, ReadLocation(property));
     }
 
     private static HotelLocation? ReadLocation(JsonElement property)
@@ -143,18 +135,6 @@ public sealed class HotelsService(IHttpClientFactory httpClients, CachedFetch ca
         return string.Join(", ", parts);
     }
 
-    private static bool IsNoResults(string error) =>
-        error.Contains("hasn't returned any results", StringComparison.OrdinalIgnoreCase)
-        || error.Contains("no results", StringComparison.OrdinalIgnoreCase);
-
-    private static string? SafeHttpsLink(string? value) =>
-        Uri.TryCreate(value, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps
-            ? uri.AbsoluteUri
-            : null;
-
-    private static string ShortHash(string value) =>
-        Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)))[..12];
-
     private async Task<IReadOnlyList<HotelOption>> FetchAsync(
         string city,
         DateOnly checkIn,
@@ -164,7 +144,7 @@ public sealed class HotelsService(IHttpClientFactory httpClients, CachedFetch ca
         CancellationToken ct)
     {
         var uri = new Uri(
-            $"{SearchUrl}?engine=google_hotels&q={Uri.EscapeDataString(city)}"
+            $"{SerpApi.SearchUrl}?engine=google_hotels&q={Uri.EscapeDataString(city)}"
             + $"&check_in_date={CachedFetch.Normalise(checkIn)}&check_out_date={CachedFetch.Normalise(checkOut)}"
             + $"&adults={travellers.ToString(CultureInfo.InvariantCulture)}&currency=USD&hl=en"
             + $"&api_key={Uri.EscapeDataString(apiKey)}",
