@@ -1,24 +1,5 @@
-import ArrowUpwardRounded from '@mui/icons-material/ArrowUpwardRounded';
-import AutoAwesomeRounded from '@mui/icons-material/AutoAwesomeRounded';
-import BeachAccessRounded from '@mui/icons-material/BeachAccessRounded';
-import LandscapeRounded from '@mui/icons-material/LandscapeRounded';
-import RamenDiningRounded from '@mui/icons-material/RamenDiningRounded';
-import SavingsRounded from '@mui/icons-material/SavingsRounded';
-import TravelExploreRounded from '@mui/icons-material/TravelExploreRounded';
-import {
-  Alert,
-  Avatar,
-  Box,
-  Card,
-  CardActionArea,
-  IconButton,
-  Paper,
-  Stack,
-  TextField,
-  Typography,
-} from '@mui/material';
-import { keyframes } from '@mui/material/styles';
-import { type FormEvent, type ReactNode, useEffect, useRef, useState } from 'react';
+import { Alert, Box, Stack, Typography } from '@mui/material';
+import { useEffect, useRef, useState } from 'react';
 import { useLoaderData, useNavigate, useRevalidator, useRouteLoaderData } from 'react-router';
 import {
   type Action,
@@ -33,13 +14,10 @@ import {
   sendMessage,
   UnauthorizedError,
 } from '../api/api';
-import { ExportLink } from '../components/ExportLink';
+import { Composer } from '../components/Composer';
+import { EmptyState } from '../components/EmptyState';
 import { initials } from '../components/initials';
-import { PlanCard } from '../components/PlanCard';
-import { ReviewSources } from '../components/ReviewSources';
-import { SuggestionPills } from '../components/SuggestionPills';
-import { ToolProgress } from '../components/ToolProgress';
-import { brandGradient } from '../theme';
+import { MessageBubble } from '../components/MessageBubble';
 import {
   applyEvent,
   applyMapPins,
@@ -50,214 +28,6 @@ import {
 
 function isAbort(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError';
-}
-
-const blink = keyframes`
-  0%, 80%, 100% { opacity: 0.25; transform: translateY(0); }
-  40% { opacity: 1; transform: translateY(-2px); }
-`;
-
-function TypingDots() {
-  return (
-    <Box
-      component="span"
-      aria-label="Assistant is typing"
-      sx={{ display: 'inline-flex', gap: 0.5, py: 0.75 }}
-    >
-      {[0, 1, 2].map((dot) => (
-        <Box
-          key={dot}
-          component="span"
-          sx={{
-            width: 6,
-            height: 6,
-            borderRadius: '50%',
-            bgcolor: 'text.secondary',
-            animation: `${blink} 1.2s ${dot * 0.15}s infinite ease-in-out`,
-          }}
-        />
-      ))}
-    </Box>
-  );
-}
-
-type MessageBubbleProps = {
-  message: ChatMessage;
-  userInitials: string;
-  isLast: boolean;
-  streaming: boolean;
-  cardInteractive: boolean;
-  showMap: boolean;
-  picked: Picked | null;
-  onPickPill: (pill: Pill) => void;
-  onPickOptions: (cardId: string, picked: Picked) => void;
-};
-
-function MessageBubble({
-  message,
-  userInitials,
-  isLast,
-  streaming,
-  cardInteractive,
-  showMap,
-  picked,
-  onPickPill,
-  onPickOptions,
-}: MessageBubbleProps) {
-  const isUser = message.role === 'user';
-  const showDots = !isUser && message.text === '' && !message.notice && streaming && isLast;
-  const { planCard } = message;
-  return (
-    <Box
-      sx={{
-        display: 'flex',
-        gap: 1.5,
-        alignItems: 'flex-start',
-        flexDirection: isUser ? 'row-reverse' : 'row',
-      }}
-    >
-      <Avatar
-        sx={{
-          width: 32,
-          height: 32,
-          fontSize: 14,
-          bgcolor: isUser ? 'primary.main' : 'secondary.main',
-        }}
-      >
-        {isUser ? userInitials : <TravelExploreRounded fontSize="small" />}
-      </Avatar>
-      <Paper
-        elevation={0}
-        sx={{
-          px: 2.5,
-          py: 1.75,
-          maxWidth: '75%',
-          ...(planCard ? { width: '75%' } : {}),
-          borderRadius: 4,
-          ...(isUser
-            ? { bgcolor: 'primary.main', color: 'primary.contrastText', borderTopRightRadius: 6 }
-            : { border: 1, borderColor: 'divider', borderTopLeftRadius: 6 }),
-        }}
-      >
-        <Typography variant="caption" component="p" sx={{ fontWeight: 600, opacity: 0.75 }}>
-          {isUser ? 'You' : 'Assistant'}
-        </Typography>
-        {!isUser && <ToolProgress toolCalls={message.toolCalls} />}
-        <Typography component="p" sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
-          {showDots ? <TypingDots /> : message.text}
-        </Typography>
-        {!isUser && <ReviewSources items={message.sources ?? []} />}
-        {(message.artifacts ?? []).map((artifact) => (
-          <ExportLink key={artifact.id} artifact={artifact} />
-        ))}
-        {message.notice && (
-          <Alert severity="info" sx={{ mt: 1 }}>
-            {message.notice}
-          </Alert>
-        )}
-        {planCard && picked && (
-          <PlanCard
-            card={planCard}
-            picked={picked}
-            interactive={cardInteractive}
-            showMap={showMap}
-            onPick={(next) => onPickOptions(planCard.id, next)}
-          />
-        )}
-        {!isUser && isLast && (
-          <SuggestionPills items={message.pills} disabled={streaming} onPick={onPickPill} />
-        )}
-      </Paper>
-    </Box>
-  );
-}
-
-type Starter = { icon: ReactNode; title: string; prompt: string };
-
-const starters: Starter[] = [
-  {
-    icon: <RamenDiningRounded />,
-    title: 'Food and hiking in Tokyo',
-    prompt: '5 days in Tokyo, mid-budget, food and hiking',
-  },
-  {
-    icon: <BeachAccessRounded />,
-    title: 'A long weekend by the sea',
-    prompt: 'A relaxed 3-day beach weekend in Da Nang for two',
-  },
-  {
-    icon: <SavingsRounded />,
-    title: 'Europe on a budget',
-    prompt: 'One week in Lisbon and Porto on a tight budget',
-  },
-  {
-    icon: <LandscapeRounded />,
-    title: 'Best time to go',
-    prompt: 'When is the best weather to visit Iceland?',
-  },
-];
-
-type EmptyStateProps = {
-  name: string | undefined;
-  disabled: boolean;
-  onPick: (prompt: string) => void;
-};
-
-function EmptyState({ name, disabled, onPick }: EmptyStateProps) {
-  const firstName = name?.trim().split(/\s+/)[0];
-  return (
-    <Box
-      sx={{ flexGrow: 1, display: 'grid', placeItems: 'center', px: 3, py: 4, overflowY: 'auto' }}
-    >
-      <Box sx={{ width: '100%', maxWidth: 720, textAlign: 'center' }}>
-        <Box
-          sx={{
-            mx: 'auto',
-            mb: 2,
-            width: 56,
-            height: 56,
-            borderRadius: 4,
-            display: 'grid',
-            placeItems: 'center',
-            color: '#fff',
-            background: brandGradient,
-          }}
-        >
-          <AutoAwesomeRounded />
-        </Box>
-        <Typography variant="h4" component="h1">
-          {firstName ? `Where to next, ${firstName}?` : 'Where to next?'}
-        </Typography>
-        <Typography color="text.secondary" sx={{ mt: 1.5, mb: 5 }}>
-          Hi, I am your travel buddy. Tell me where, when and what you love, and we will plan a
-          lovely trip together.
-        </Typography>
-        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 2 }}>
-          {starters.map((starter) => (
-            <Card
-              key={starter.title}
-              variant="outlined"
-              sx={{ borderRadius: 4, textAlign: 'left' }}
-            >
-              <CardActionArea
-                disabled={disabled}
-                onClick={() => onPick(starter.prompt)}
-                sx={{ p: 2, height: '100%', display: 'flex', alignItems: 'flex-start', gap: 1.5 }}
-              >
-                <Box sx={{ color: 'primary.main', display: 'flex', pt: 0.25 }}>{starter.icon}</Box>
-                <Box sx={{ flexGrow: 1 }}>
-                  <Typography variant="subtitle2">{starter.title}</Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    {starter.prompt}
-                  </Typography>
-                </Box>
-              </CardActionArea>
-            </Card>
-          ))}
-        </Box>
-      </Box>
-    </Box>
-  );
 }
 
 function ChatView({ conversation }: { conversation: Conversation | undefined }) {
@@ -393,11 +163,6 @@ function ChatView({ conversation }: { conversation: Conversation | undefined }) 
     setPicks((previous) => ({ ...previous, [cardId]: next }));
   }
 
-  function handleSubmit(event: FormEvent) {
-    event.preventDefault();
-    submit(draft.trim());
-  }
-
   const isEmpty = messages.length === 0;
   const latestIndex = latestCardIndex(messages);
   const userInitials = initials(app?.me?.name ?? '');
@@ -446,59 +211,12 @@ function ChatView({ conversation }: { conversation: Conversation | undefined }) 
               {error}
             </Alert>
           )}
-          <Paper
-            component="form"
-            onSubmit={handleSubmit}
-            elevation={0}
-            sx={{
-              display: 'flex',
-              alignItems: 'flex-end',
-              gap: 1,
-              pl: 2,
-              pr: 1,
-              py: 1,
-              borderRadius: 4,
-              border: 1,
-              borderColor: 'divider',
-              boxShadow: '0 8px 24px rgba(15, 40, 50, 0.08)',
-              transition: 'border-color 120ms',
-              '&:focus-within': { borderColor: 'primary.main' },
-            }}
-          >
-            <TextField
-              placeholder="Plan a trip, compare flights, check the weather…"
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              disabled={streaming}
-              multiline
-              maxRows={6}
-              fullWidth
-              variant="standard"
-              slotProps={{
-                input: { disableUnderline: true, sx: { py: 0.75 } },
-                htmlInput: { 'aria-label': 'Message' },
-              }}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' && !event.shiftKey) {
-                  event.preventDefault();
-                  event.currentTarget.closest('form')?.requestSubmit();
-                }
-              }}
-            />
-            <IconButton
-              type="submit"
-              aria-label="Send"
-              disabled={streaming || draft.trim() === ''}
-              sx={{
-                bgcolor: 'primary.main',
-                color: 'primary.contrastText',
-                '&:hover': { bgcolor: 'primary.dark' },
-                '&.Mui-disabled': { bgcolor: 'action.disabledBackground' },
-              }}
-            >
-              <ArrowUpwardRounded />
-            </IconButton>
-          </Paper>
+          <Composer
+            value={draft}
+            disabled={streaming}
+            onChange={setDraft}
+            onSend={() => submit(draft.trim())}
+          />
           <Typography
             variant="caption"
             color="text.secondary"
