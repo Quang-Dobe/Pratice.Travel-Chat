@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup>
-    <!-- CA1716 is a VB-interop rule (namespace segment 'Me' is a VB keyword); irrelevant for an internal service and the Features/Me folder name is fixed by the plan. -->
+    <!-- CA1716 is a VB-interop rule (namespace segment 'Me' is a VB keyword); irrelevant for an internal service. The namespace follows the Features/Me folder, which matches the /users/me route. -->
     <NoWarn>$(NoWarn);CA1716</NoWarn>
   </PropertyGroup>
 
