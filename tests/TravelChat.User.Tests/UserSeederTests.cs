@@ -5,7 +5,6 @@ using Shouldly;
 using Testcontainers.PostgreSql;
 using TravelChat.User.Data;
 using TravelChat.User.Features.Seed;
-using Xunit;
 
 namespace TravelChat.User.Tests;
 

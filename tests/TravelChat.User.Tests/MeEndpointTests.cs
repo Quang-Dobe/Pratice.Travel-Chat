@@ -16,7 +16,6 @@ using Microsoft.IdentityModel.Tokens;
 using Shouldly;
 using TravelChat.User.Data;
 using TravelChat.User.Features.CurrentUser;
-using Xunit;
 
 namespace TravelChat.User.Tests;
 
