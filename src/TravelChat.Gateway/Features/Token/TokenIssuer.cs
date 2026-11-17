@@ -11,10 +11,6 @@ public sealed class InternalTokenOptions
 {
     public const string SectionName = "InternalToken";
 
-    public string Issuer { get; set; } = InternalToken.Issuer;
-
-    public string Audience { get; set; } = InternalToken.Audience;
-
     public TimeSpan Lifetime { get; set; } = TimeSpan.FromMinutes(5);
 
     public int InternalPort { get; set; } = 8081;
@@ -73,8 +69,8 @@ public sealed class TokenIssuer : IDisposable
 
         var descriptor = new SecurityTokenDescriptor
         {
-            Issuer = _options.Issuer,
-            Audience = _options.Audience,
+            Issuer = InternalToken.Issuer,
+            Audience = InternalToken.Audience,
             Claims = claims,
             IssuedAt = issuedAt.UtcDateTime,
             Expires = issuedAt.Add(_options.Lifetime).UtcDateTime,

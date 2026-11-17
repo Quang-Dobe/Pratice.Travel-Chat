@@ -2,6 +2,8 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using Microsoft.IdentityModel.JsonWebTokens;
 using Shouldly;
 using TravelChat.Gateway.Features.Auth;
 using TravelChat.Gateway.Features.Token;
@@ -39,9 +41,10 @@ public sealed class SingleSourceTests
     [Fact]
     public void IssuedTokenUsesTheSharedIssuerAndAudience()
     {
-        var options = new InternalTokenOptions();
+        using var issuer = new TokenIssuer(Options.Create(new InternalTokenOptions()));
+        var jwt = new JsonWebTokenHandler().ReadJsonWebToken(issuer.Mint("oid-1"));
 
-        options.Issuer.ShouldBe(InternalToken.Issuer);
-        options.Audience.ShouldBe(InternalToken.Audience);
+        jwt.Issuer.ShouldBe(InternalToken.Issuer);
+        jwt.Audiences.ShouldHaveSingleItem().ShouldBe(InternalToken.Audience);
     }
 }

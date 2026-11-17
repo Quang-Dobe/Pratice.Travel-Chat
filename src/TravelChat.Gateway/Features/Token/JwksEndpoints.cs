@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Options;
+using TravelChat.ServiceDefaults;
 
 namespace TravelChat.Gateway.Features.Token;
 
@@ -30,7 +31,7 @@ public static class JwksEndpoints
         {
             var settings = options.Value;
             return TypedResults.Json(new DiscoveryDocument(
-                settings.Issuer,
+                InternalToken.Issuer,
                 new Uri(settings.InternalBaseUrl, JwksPath).AbsoluteUri));
         });
 
