@@ -1,7 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 
-namespace TravelChat.Query.Features.Shared;
+namespace TravelChat.Query.Features.Fetch;
 
 internal static class GuardedHandler
 {

@@ -3,7 +3,7 @@ using System.Net.Sockets;
 using System.Text;
 using Microsoft.Extensions.DependencyInjection;
 using Shouldly;
-using TravelChat.Query.Features.Shared;
+using TravelChat.Query.Features.Fetch;
 
 namespace TravelChat.Query.Tests;
 
