@@ -94,6 +94,57 @@ public sealed class TravelToolsTests
     }
 
     [Fact]
+    public async Task ValidationProblemWithOnlyATitleUsesTheTitle()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var tools = ToolsReturning(HttpStatusCode.BadRequest, "{\"title\":\"t\"}");
+
+        var result = await tools.FlightsSearch("LIS", "JFK", "2026-11-01", "2026-11-05", 1, ct);
+
+        result.IsError.ShouldBe(true);
+        TextOf(result).ShouldBe("Flights request was invalid: t Fix the arguments and try again.");
+    }
+
+    [Fact]
+    public async Task ValidationProblemPrefersDetailOverTitle()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var tools = ToolsReturning(HttpStatusCode.BadRequest, "{\"detail\":\"d\",\"title\":\"t\"}");
+
+        var result = await tools.FlightsSearch("LIS", "JFK", "2026-11-01", "2026-11-05", 1, ct);
+
+        result.IsError.ShouldBe(true);
+        TextOf(result).ShouldBe("Flights request was invalid: d Fix the arguments and try again.");
+    }
+
+    [Fact]
+    public async Task ValidationProblemNamesEveryFieldInOrder()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var tools = ToolsReturning(
+            HttpStatusCode.BadRequest,
+            "{\"errors\":{\"origin\":[\"o1\"],\"returnDate\":[\"r1\",\"r2\"]}}");
+
+        var result = await tools.FlightsSearch("LIS", "JFK", "2026-11-01", "2026-11-05", 1, ct);
+
+        result.IsError.ShouldBe(true);
+        TextOf(result).ShouldBe(
+            "Flights request was invalid: origin: o1; returnDate: r1 r2 Fix the arguments and try again.");
+    }
+
+    [Fact]
+    public async Task BadRequestWithoutJsonIsUnavailableRightNow()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var tools = ToolsReturning(HttpStatusCode.BadRequest, "oops", "text/plain");
+
+        var result = await tools.FlightsSearch("LIS", "JFK", "2026-11-01", "2026-11-05", 1, ct);
+
+        result.IsError.ShouldBe(true);
+        TextOf(result).ShouldBe("Flights data is unavailable right now.");
+    }
+
+    [Fact]
     public async Task ServerErrorStillMapsToUnavailableRightNow()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -266,14 +317,14 @@ public sealed class TravelToolsTests
         }
     }
 
-    private static TravelTools ToolsReturning(HttpStatusCode code, string body) =>
-        ToolsWith(new FakeHandler(_ => Json(code, body)));
+    private static TravelTools ToolsReturning(HttpStatusCode code, string body, string mediaType = "application/json") =>
+        ToolsWith(new FakeHandler(_ => Json(code, body, mediaType)));
 
     private static TravelTools ToolsWith(HttpMessageHandler handler) =>
         new(new QueryClient(new HttpClient(handler) { BaseAddress = new Uri("http://q-query:8080") }));
 
-    private static HttpResponseMessage Json(HttpStatusCode code, string body) =>
-        new(code) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
+    private static HttpResponseMessage Json(HttpStatusCode code, string body, string mediaType = "application/json") =>
+        new(code) { Content = new StringContent(body, Encoding.UTF8, mediaType) };
 
     private static string TextOf(CallToolResult result) =>
         result.Content.OfType<TextContentBlock>().Single().Text;
