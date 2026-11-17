@@ -1,5 +1,12 @@
 name: travelchat
 
+x-dotnet-health: &dotnet-health
+  test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health/live"]
+  interval: 5s
+  timeout: 5s
+  retries: 30
+  start_period: 10s
+
 services:
   postgres:
     image: postgres:17
@@ -36,12 +43,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    healthcheck: &dotnet-health
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health/live"]
-      interval: 5s
-      timeout: 5s
-      retries: 30
-      start_period: 10s
+    healthcheck: *dotnet-health
 
   q-gateway:
     build:
