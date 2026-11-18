@@ -51,6 +51,11 @@ def last_user_message(messages: Sequence[BaseMessage]) -> HumanMessage | None:
     return None
 
 
+def reply_before_latest(messages: Sequence[BaseMessage]) -> str:
+    previous = messages[-2] if len(messages) > 1 else None
+    return previous.text.strip() if isinstance(previous, AIMessage) else ""
+
+
 def chat_history(messages: Sequence[BaseMessage]) -> list[BaseMessage]:
     recent: list[BaseMessage] = [
         message
