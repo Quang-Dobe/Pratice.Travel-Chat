@@ -1,9 +1,9 @@
-import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useEffect, useState } from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { NO_FORECAST, type Picked, type PlanCard as PlanCardData } from '../api/api';
+import { describe, expect, it, vi } from 'vitest';
+import { NO_FORECAST, type Picked, type PlanCard as PlanCardData } from '../api/schemas';
+import { makeCard } from '../test/planCard';
 import { PlanCard } from './PlanCard';
 
 vi.mock('react-map-gl/maplibre', () => ({
@@ -20,11 +20,7 @@ vi.mock('react-map-gl/maplibre', () => ({
   useMap: () => ({ current: undefined }),
 }));
 
-afterEach(cleanup);
-
-const baseCard: PlanCardData = {
-  id: 'card1',
-  status: 'open',
+const baseCard: PlanCardData = makeCard({
   flights: [
     {
       id: 'f1',
@@ -43,25 +39,6 @@ const baseCard: PlanCardData = {
       location: null,
     },
   ],
-  hotels: [
-    {
-      id: 'h1',
-      summary: 'Hotel one',
-      priceUsd: 300,
-      deepLink: 'https://example.com/h1',
-      legs: [],
-      location: null,
-    },
-    {
-      id: 'h2',
-      summary: 'Hotel two',
-      priceUsd: 700,
-      deepLink: 'https://example.com/h2',
-      legs: [],
-      location: null,
-    },
-  ],
-  picked: { flightId: 'f1', hotelId: 'h1' },
   days: [
     {
       date: '2026-11-01',
@@ -78,7 +55,6 @@ const baseCard: PlanCardData = {
       stops: [],
     },
   ],
-  reviewPins: [],
   budget: {
     flightUsd: 500,
     hotelUsd: 300,
@@ -87,7 +63,7 @@ const baseCard: PlanCardData = {
     budgetUsd: 2000,
     overBudget: false,
   },
-};
+});
 
 function Harness({
   card = baseCard,

@@ -1,7 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using TravelChat.ServiceDefaults;
 using TravelChat.User.Data;
-using TravelChat.User.Features.CurrentUser;
+using TravelChat.User.Features.Me;
 using TravelChat.User.Features.Seed;
 
 var builder = WebApplication.CreateBuilder(args);

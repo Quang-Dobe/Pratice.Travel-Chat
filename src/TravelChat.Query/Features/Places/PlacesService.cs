@@ -54,26 +54,20 @@ public sealed class PlacesService(IHttpClientFactory httpClients, CachedFetch ca
     {
         var categories = CategoriesFor(interests);
         var query = $"{CacheVersion}|{CachedFetch.Normalise(city)}|{string.Join(',', categories)}";
-        return await cachedFetch.GetAsync(
+        return await cachedFetch.GetWithKeyAsync(
             ClientName,
             query,
             s_ttl,
             (apiKey, token) => FetchAsync(city.Trim(), categories, apiKey, token),
-            ct,
-            requiresKey: true);
+            ct);
     }
 
     private async Task<IReadOnlyList<Attraction>> FetchAsync(
         string city,
         IReadOnlyList<string> categories,
-        string? apiKey,
+        string apiKey,
         CancellationToken ct)
     {
-        if (apiKey is null)
-        {
-            throw new ProviderFailureException(ProviderStatus.Unavailable, "no key set");
-        }
-
         var http = httpClients.CreateClient(ClientName);
         var key = Uri.EscapeDataString(apiKey);
 
@@ -81,14 +75,8 @@ public sealed class PlacesService(IHttpClientFactory httpClients, CachedFetch ca
             $"{GeocodeUrl}?text={Uri.EscapeDataString(city)}&limit=1&format=json&apiKey={key}",
             UriKind.Absolute);
         using var geocode = JsonDocument.Parse(await ResultMapping.GetBodyAsync(http, geocodeUri, ct));
-        if (!geocode.RootElement.TryGetProperty("results", out var results)
-            || results.ValueKind != JsonValueKind.Array
-            || results.GetArrayLength() == 0)
-        {
-            throw new ProviderFailureException(ProviderStatus.Error, "city not found");
-        }
-
-        var place = results[0];
+        var place = geocode.RootElement.FirstResult()
+            ?? throw new ProviderFailureException(ProviderStatus.Error, "city not found");
         var longitude = place.RequireNumber("lon").ToString(CultureInfo.InvariantCulture);
         var latitude = place.RequireNumber("lat").ToString(CultureInfo.InvariantCulture);
 
@@ -122,20 +110,7 @@ public sealed class PlacesService(IHttpClientFactory httpClients, CachedFetch ca
 
     private static (double? Lat, double? Lon) ReadCoordinates(JsonElement properties)
     {
-        if (properties.TryGetProperty("lat", out var latitude)
-            && latitude.ValueKind == JsonValueKind.Number
-            && properties.TryGetProperty("lon", out var longitude)
-            && longitude.ValueKind == JsonValueKind.Number)
-        {
-            var lat = latitude.GetDouble();
-            var lon = longitude.GetDouble();
-            if (lat is >= -90 and <= 90 && lon is >= -180 and <= 180)
-            {
-                return (lat, lon);
-            }
-        }
-
-        return (null, null);
+        return properties.LatLon("lat", "lon") is { } coordinates ? (coordinates.Lat, coordinates.Lon) : (null, null);
     }
 
     private static string FirstCategory(JsonElement properties)

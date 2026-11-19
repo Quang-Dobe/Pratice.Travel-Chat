@@ -1,6 +1,4 @@
 using System.Globalization;
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using TravelChat.Query.Features.Shared;
 
@@ -10,7 +8,6 @@ public sealed class FlightsService(IHttpClientFactory httpClients, CachedFetch c
 {
     public const string ClientName = "flights__serpapi";
 
-    private const string SearchUrl = "https://serpapi.com/search.json";
     private const int MaxOptions = 5;
     private const string CacheVersion = "v2";
 
@@ -60,13 +57,12 @@ public sealed class FlightsService(IHttpClientFactory httpClients, CachedFetch c
             CachedFetch.Normalise(returnDate),
             travellers.ToString(CultureInfo.InvariantCulture));
 
-        return await cachedFetch.GetAsync(
+        return await cachedFetch.GetWithKeyAsync(
             ClientName,
             query,
             s_ttl,
             (apiKey, token) => FetchAsync(originCode, destinationCode, departDate, returnDate, travellers, apiKey, token),
-            ct,
-            requiresKey: true);
+            ct);
     }
 
     private static string Airports(string code)
@@ -79,17 +75,12 @@ public sealed class FlightsService(IHttpClientFactory httpClients, CachedFetch c
     {
         using var document = JsonDocument.Parse(body);
         var root = document.RootElement;
-        if (root.OptionalString("error") is { Length: > 0 } error)
+        if (SerpApi.IsNoResults(root))
         {
-            if (IsNoResults(error))
-            {
-                return [];
-            }
-
-            throw new ProviderFailureException(ProviderStatus.Error, "provider returned an error");
+            return [];
         }
 
-        var link = SafeHttpsLink(
+        var link = SerpApi.HttpsLink(
             root.TryGetProperty("search_metadata", out var metadata) ? metadata.OptionalString("google_flights_url") : null);
         var options = new List<FlightOption>();
         if (link is null)
@@ -129,7 +120,7 @@ public sealed class FlightsService(IHttpClientFactory httpClients, CachedFetch c
 
         var summary = Summarise(item);
         var token = item.OptionalString("booking_token") ?? item.OptionalString("departure_token") ?? summary;
-        return new FlightOption(ShortHash(token), summary, price.GetDecimal(), link, MapLegs(item));
+        return new FlightOption(SerpApi.ShortHash(token), summary, price.GetDecimal(), link, MapLegs(item));
     }
 
     private static List<FlightLeg> MapLegs(JsonElement item)
@@ -198,34 +189,17 @@ public sealed class FlightsService(IHttpClientFactory httpClients, CachedFetch c
         return parts.Count == 0 ? "flight option" : string.Join(", ", parts);
     }
 
-    private static bool IsNoResults(string error) =>
-        error.Contains("hasn't returned any results", StringComparison.OrdinalIgnoreCase)
-        || error.Contains("no results", StringComparison.OrdinalIgnoreCase);
-
-    private static string? SafeHttpsLink(string? value) =>
-        Uri.TryCreate(value, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps
-            ? uri.AbsoluteUri
-            : null;
-
-    private static string ShortHash(string value) =>
-        Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)))[..12];
-
     private async Task<IReadOnlyList<FlightOption>> FetchAsync(
         string origin,
         string destination,
         DateOnly departDate,
         DateOnly returnDate,
         int travellers,
-        string? apiKey,
+        string apiKey,
         CancellationToken ct)
     {
-        if (apiKey is null)
-        {
-            throw new ProviderFailureException(ProviderStatus.Unavailable, "no key set");
-        }
-
         var uri = new Uri(
-            $"{SearchUrl}?engine=google_flights&departure_id={Uri.EscapeDataString(origin)}"
+            $"{SerpApi.SearchUrl}?engine=google_flights&departure_id={Uri.EscapeDataString(origin)}"
             + $"&arrival_id={Uri.EscapeDataString(destination)}"
             + $"&outbound_date={CachedFetch.Normalise(departDate)}&return_date={CachedFetch.Normalise(returnDate)}"
             + $"&type=1&currency=USD&hl=en&adults={travellers.ToString(CultureInfo.InvariantCulture)}"

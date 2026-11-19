@@ -7,7 +7,6 @@ public sealed class SearchService(IHttpClientFactory httpClients, CachedFetch ca
 {
     public const string ClientName = "search__serpapi";
 
-    private const string SearchUrl = "https://serpapi.com/search.json";
     private const int MaxResults = 5;
     private const int MaxTitleLength = 200;
     private const int MaxSnippetLength = 500;
@@ -15,26 +14,20 @@ public sealed class SearchService(IHttpClientFactory httpClients, CachedFetch ca
     private static readonly TimeSpan s_ttl = TimeSpan.FromHours(24);
 
     public async Task<ProviderResult<IReadOnlyList<SearchResult>>> SearchAsync(string query, CancellationToken ct) =>
-        await cachedFetch.GetAsync(
+        await cachedFetch.GetWithKeyAsync(
             ClientName,
             CachedFetch.Normalise(query),
             s_ttl,
             (apiKey, token) => FetchAsync(query.Trim(), apiKey, token),
-            ct,
-            requiresKey: true);
+            ct);
 
     internal static IReadOnlyList<SearchResult> MapResults(string body)
     {
         using var document = JsonDocument.Parse(body);
         var root = document.RootElement;
-        if (root.OptionalString("error") is { Length: > 0 } error)
+        if (SerpApi.IsNoResults(root))
         {
-            if (IsNoResults(error))
-            {
-                return [];
-            }
-
-            throw new ProviderFailureException(ProviderStatus.Error, "provider returned an error");
+            return [];
         }
 
         var results = new List<SearchResult>();
@@ -45,7 +38,7 @@ public sealed class SearchService(IHttpClientFactory httpClients, CachedFetch ca
 
         foreach (var item in items.EnumerateArray())
         {
-            if (SafeHttpsLink(item.OptionalString("link")) is not { } url)
+            if (SerpApi.HttpsLink(item.OptionalString("link")) is not { } url)
             {
                 continue;
             }
@@ -68,24 +61,10 @@ public sealed class SearchService(IHttpClientFactory httpClients, CachedFetch ca
         return text.Length > maxLength ? text[..maxLength] : text;
     }
 
-    private static bool IsNoResults(string error) =>
-        error.Contains("hasn't returned any results", StringComparison.OrdinalIgnoreCase)
-        || error.Contains("no results", StringComparison.OrdinalIgnoreCase);
-
-    private static string? SafeHttpsLink(string? value) =>
-        Uri.TryCreate(value, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps
-            ? uri.AbsoluteUri
-            : null;
-
-    private async Task<IReadOnlyList<SearchResult>> FetchAsync(string query, string? apiKey, CancellationToken ct)
+    private async Task<IReadOnlyList<SearchResult>> FetchAsync(string query, string apiKey, CancellationToken ct)
     {
-        if (apiKey is null)
-        {
-            throw new ProviderFailureException(ProviderStatus.Unavailable, "no key set");
-        }
-
         var uri = new Uri(
-            $"{SearchUrl}?engine=google&q={Uri.EscapeDataString(query)}&hl=en&api_key={Uri.EscapeDataString(apiKey)}",
+            $"{SerpApi.SearchUrl}?engine=google&q={Uri.EscapeDataString(query)}&hl=en&api_key={Uri.EscapeDataString(apiKey)}",
             UriKind.Absolute);
         var body = await ResultMapping.GetBodyAsync(httpClients.CreateClient(ClientName), uri, ct);
         return MapResults(body);

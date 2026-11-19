@@ -37,7 +37,7 @@ public sealed class WeatherService(IHttpClientFactory httpClients, CachedFetch c
             ClientName,
             query,
             s_ttl,
-            (_, token) => FetchAsync(requestedCity, first, last, token),
+            token => FetchAsync(requestedCity, first, last, token),
             ct);
     }
 
@@ -49,14 +49,8 @@ public sealed class WeatherService(IHttpClientFactory httpClients, CachedFetch c
             $"{GeocodingUrl}?name={Uri.EscapeDataString(city)}&count=1&language=en&format=json",
             UriKind.Absolute);
         using var geocode = JsonDocument.Parse(await ResultMapping.GetBodyAsync(http, geocodeUri, ct));
-        if (!geocode.RootElement.TryGetProperty("results", out var results)
-            || results.ValueKind != JsonValueKind.Array
-            || results.GetArrayLength() == 0)
-        {
-            throw new ProviderFailureException(ProviderStatus.Error, "city not found");
-        }
-
-        var place = results[0];
+        var place = geocode.RootElement.FirstResult()
+            ?? throw new ProviderFailureException(ProviderStatus.Error, "city not found");
         var latitude = place.RequireNumber("latitude").ToString(CultureInfo.InvariantCulture);
         var longitude = place.RequireNumber("longitude").ToString(CultureInfo.InvariantCulture);
         var resolvedCity = place.OptionalString("name") is { Length: > 0 } name ? name : city;

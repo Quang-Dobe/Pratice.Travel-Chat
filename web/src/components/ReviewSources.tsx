@@ -1,5 +1,5 @@
 import { Box, Link, Stack, Typography } from '@mui/material';
-import type { SourceItem } from '../api/api';
+import type { SourceItem } from '../api/schemas';
 
 type ReviewSourcesProps = { items: SourceItem[] };
 

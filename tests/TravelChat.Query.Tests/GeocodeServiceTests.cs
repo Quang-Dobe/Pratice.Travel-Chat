@@ -113,6 +113,14 @@ public sealed class GeocodeServiceTests
         result.Data.ShouldNotBeNull().ShouldBeEmpty();
     }
 
+    [Fact]
+    public void MapCoordinatesNonObjectRootThrowsErrorStatus()
+    {
+        var failure = Should.Throw<ProviderFailureException>(() => GeocodeService.MapCoordinates("[]"));
+
+        failure.Status.ShouldBe("error");
+    }
+
     private static HttpResponseMessage Route(HttpRequestMessage request) =>
         request.RequestUri!.Query.Contains("Haneda", StringComparison.OrdinalIgnoreCase)
             ? StubHandler.Json("""{"results":[{"lat":35.5494,"lon":139.7798}]}""")

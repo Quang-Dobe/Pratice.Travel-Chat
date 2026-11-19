@@ -1,62 +1,49 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type Browser, expect, type Locator, type Page, test } from '@playwright/test';
+import { type Browser, expect, type Page, test } from '@playwright/test';
 import { compose, REPO_ROOT } from './global-setup';
+import { asUser, signIn } from './support/auth';
+import { conversationIdFrom, startNewConversation } from './support/chat';
+import {
+  BASE_URL,
+  credsFrom,
+  DENIED_HEADING,
+  escapeRegExp,
+  missingModelCredentials,
+  pause,
+  requireCreds,
+} from './support/env';
+import {
+  assistantBubbles,
+  historyItems,
+  historyLink,
+  messageBox,
+  newConversationLink,
+  replyText,
+  turnBubbles,
+} from './support/locators';
 
-const BASE_URL = process.env.E2E_BASE_URL ?? 'http://localhost:8080';
-const APP_HOST = new URL(BASE_URL).host;
 const USERS_FILE = join(REPO_ROOT, 'users.json');
 const ENV_EXAMPLE_FILE = join(REPO_ROOT, '.env.example');
 
 const LEGACY_PLACEHOLDER = /placeholder reply|planner is not connected yet/i;
 const REPLY_TIMEOUT_MS = 180_000;
 const SERVICES = ['postgres', 'redis', 'q-user', 'q-gateway', 'q-agent', 'q-mcp', 'q-query', 'web'];
-const DENIED_HEADING = 'Access is by invitation only';
-const CORRELATION_FAILURE = /correlation failed|unable to unprotect the message\.state/i;
-const FIRST_SIGN_IN_PROMPT =
-  /update your password|more information required|action required|keep your account secure/i;
-const MFA_PROMPT = /approve sign in request|verify your identity|enter code|authenticator app/i;
 
 const DEFAULT_TIMEOUT_MS = 300_000;
 const COMPOSE_TIMEOUT_MS = 1_800_000;
-const SIGN_IN_TIMEOUT_MS = 240_000;
 
 test.describe.configure({ timeout: DEFAULT_TIMEOUT_MS });
 
-type Creds = { email: string; password: string };
 type InvitedUser = { oid: string; name: string; email: string };
-type Outcome = 'chat' | 'denied' | 'correlation' | 'entra' | 'pending';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function pause(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
 function uniqueTag(): string {
   return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
-}
-
-function credsFrom(prefix: string): Creds | null {
-  const email = process.env[`${prefix}_EMAIL`];
-  const password = process.env[`${prefix}_PASSWORD`];
-  return email && password ? { email, password } : null;
-}
-
-function requireCreds(prefix: string): Creds {
-  const creds = credsFrom(prefix);
-  if (!creds) {
-    test.skip(true, `${prefix}_EMAIL and ${prefix}_PASSWORD are not set in the test environment`);
-    throw new Error('unreachable');
-  }
-  return creds;
 }
 
 function parseUsers(raw: string): InvitedUser[] {
@@ -127,126 +114,6 @@ function activeUserEmails(): string[] {
     .sort();
 }
 
-const newConversationLink = (page: Page): Locator =>
-  page.getByRole('link', { name: 'New conversation' });
-const historyItems = (page: Page): Locator =>
-  page.getByRole('list', { name: 'Conversation history' }).locator('a');
-const conversationLog = (page: Page): Locator => page.getByRole('log', { name: 'Conversation' });
-const turnBubbles = (page: Page): Locator => conversationLog(page).locator(':scope > div');
-const assistantBubbles = (page: Page): Locator =>
-  turnBubbles(page).filter({ has: page.getByText('Assistant', { exact: true }) });
-const messageBox = (page: Page): Locator => page.getByRole('textbox', { name: 'Message' });
-const historyLink = (page: Page, id: string): Locator =>
-  page.getByRole('list', { name: 'Conversation history' }).locator(`a[href="/c/${id}"]`);
-const replyText = (page: Page): Locator => assistantBubbles(page).last().locator('p').nth(1);
-
-async function bodyText(page: Page): Promise<string> {
-  return page
-    .locator('body')
-    .innerText({ timeout: 2_000 })
-    .catch(() => '');
-}
-
-async function readOutcome(page: Page): Promise<Outcome> {
-  try {
-    if (new URL(page.url()).host !== APP_HOST) {
-      return 'entra';
-    }
-    if (await newConversationLink(page).isVisible()) {
-      return 'chat';
-    }
-    if (await page.getByRole('heading', { name: DENIED_HEADING }).isVisible()) {
-      return 'denied';
-    }
-    return CORRELATION_FAILURE.test(await bodyText(page)) ? 'correlation' : 'pending';
-  } catch {
-    return 'pending';
-  }
-}
-
-async function correlationError(page: Page): Promise<Error> {
-  const cookies = (await page.context().cookies())
-    .map((cookie) => `${cookie.name}[secure=${cookie.secure},sameSite=${cookie.sameSite}]`)
-    .join(', ');
-  const url = new URL(page.url());
-  return new Error(
-    `OIDC "Correlation failed" at ${url.pathname}. The correlation/nonce cookies set on ` +
-      `${BASE_URL} were not sent back on the /signin-oidc redirect. Plain HTTP with ` +
-      `SameSite=None or Secure cookies is the usual cause; check the cookie policy in q-gateway. ` +
-      `Cookies in the browser (names only): ${cookies || 'none'}`,
-  );
-}
-
-async function advanceEntra(page: Page, creds: Creds, done: Set<string>): Promise<boolean> {
-  const emailInput = page
-    .locator(
-      'input[type="email"]:not([aria-hidden="true"]), input[name="loginfmt"]:not([aria-hidden="true"])',
-    )
-    .first();
-  const passwordInput = page
-    .locator(
-      'input[type="password"]:not([aria-hidden="true"]), input[name="passwd"]:not([aria-hidden="true"])',
-    )
-    .first();
-  const picker = page.getByRole('button', { name: new RegExp(escapeRegExp(creds.email), 'i') });
-  if (!done.has('email') && (await emailInput.isVisible())) {
-    done.add('email');
-    await emailInput.fill(creds.email);
-    await page.getByRole('button', { name: 'Next' }).click();
-    return false;
-  }
-  if (!done.has('password') && (await passwordInput.isVisible())) {
-    done.add('password');
-    await passwordInput.fill(creds.password);
-    await page.getByRole('button', { name: 'Sign in' }).click();
-    return false;
-  }
-  if (!done.has('picker') && (await picker.first().isVisible())) {
-    done.add('picker');
-    await picker.first().click();
-    return false;
-  }
-  if (await page.getByText('Stay signed in?').isVisible()) {
-    await page.getByRole('button', { name: 'No' }).click();
-    return false;
-  }
-  return MFA_PROMPT.test(await bodyText(page));
-}
-
-async function signIn(page: Page, creds: Creds): Promise<'chat' | 'denied'> {
-  await page.goto('/login');
-  await page.getByRole('button', { name: 'Sign in' }).click();
-  const done = new Set<string>();
-  const deadline = Date.now() + SIGN_IN_TIMEOUT_MS;
-  let mfaSeen = false;
-  while (Date.now() < deadline) {
-    const outcome = await readOutcome(page);
-    if (outcome === 'chat' || outcome === 'denied') {
-      return outcome;
-    }
-    if (outcome === 'correlation') {
-      throw await correlationError(page);
-    }
-    if (outcome === 'entra') {
-      if (FIRST_SIGN_IN_PROMPT.test(await bodyText(page))) {
-        throw new Error(
-          `Account ${creds.email} must finish first sign-in by hand (password change / MFA setup), then update web/.env.e2e`,
-        );
-      }
-      const mfa = await advanceEntra(page, creds, done).catch(() => false);
-      mfaSeen = mfaSeen || mfa;
-    }
-    await pause(500);
-  }
-  const url = new URL(page.url());
-  const hint = mfaSeen
-    ? ' An MFA prompt was shown: run headed (pnpm e2e --headed) and approve it by hand.'
-    : '';
-  throw new Error(
-    `Sign-in did not finish within ${SIGN_IN_TIMEOUT_MS / 1000}s; stuck at ${url.host}${url.pathname}.${hint}`,
-  );
-}
-
 async function inSession<T>(browser: Browser, run: (page: Page) => Promise<T>): Promise<T> {
   const context = await browser.newContext({ baseURL: BASE_URL });
   try {
@@ -254,22 +121,6 @@ async function inSession<T>(browser: Browser, run: (page: Page) => Promise<T>): 
   } finally {
     await context.close();
   }
-}
-
-async function asUser<T>(
-  browser: Browser,
-  creds: Creds,
-  run: (page: Page) => Promise<T>,
-): Promise<T> {
-  return inSession(browser, async (page) => {
-    const outcome = await signIn(page, creds);
-    if (outcome !== 'chat') {
-      throw new Error(
-        `${creds.email} was turned away as uninvited; its oid must be listed in users.json`,
-      );
-    }
-    return run(page);
-  });
 }
 
 async function sendMessage(page: Page, text: string): Promise<void> {
@@ -281,19 +132,6 @@ async function expectReplies(page: Page, count: number): Promise<void> {
   await expect(assistantBubbles(page)).toHaveCount(count);
   await expect(messageBox(page)).toBeEnabled({ timeout: REPLY_TIMEOUT_MS });
   await expect(replyText(page)).not.toHaveText(/^\s*$/);
-}
-
-function conversationIdFrom(page: Page): string {
-  const match = /\/c\/([^/?#]+)/.exec(page.url());
-  if (!match?.[1]) {
-    throw new Error(`Not on a conversation route: ${page.url()}`);
-  }
-  return match[1];
-}
-
-async function startNewConversation(page: Page): Promise<void> {
-  await newConversationLink(page).click();
-  await expect(assistantBubbles(page)).toHaveCount(0);
 }
 
 async function createConversation(page: Page, firstMessage: string): Promise<string> {
@@ -343,22 +181,6 @@ async function langsmithRootRunCount(conversationId: string): Promise<number> {
   }
   const body: unknown = await runsResponse.json();
   return isRecord(body) && Array.isArray(body.runs) ? body.runs.length : 0;
-}
-
-function missingModelCredentials(): string[] {
-  const provider = (process.env.MODEL_PROVIDER ?? '').trim().toLowerCase() || 'openai_chat';
-  const unset = (names: string[]): string[] =>
-    names.filter((name) => (process.env[name] ?? '').trim() === '');
-  switch (provider) {
-    case 'anthropic':
-      return unset(['ANTHROPIC_API_KEY']);
-    case 'openai_chat':
-      return unset(['OPENAI_API_KEY']);
-    case 'azure_openai':
-      return unset(['AZURE_OPENAI_ENDPOINT', 'AZURE_OPENAI_API_KEY', 'AZURE_OPENAI_API_VERSION']);
-    default:
-      return [`a supported MODEL_PROVIDER (got "${provider}")`];
-  }
 }
 
 const CREDENTIAL_NAME = /^(ANTHROPIC|OPENAI|AZURE_OPENAI)_(API_KEY|BASE_URL|ENDPOINT)$/;

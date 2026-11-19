@@ -16,7 +16,12 @@ import {
   Typography,
 } from '@mui/material';
 import type { ReactNode } from 'react';
-import { NO_FORECAST, type Option, type Picked, type PlanCard as PlanCardData } from '../api/api';
+import {
+  NO_FORECAST,
+  type Option,
+  type Picked,
+  type PlanCard as PlanCardData,
+} from '../api/schemas';
 import { PlanMap } from './PlanMap';
 
 const usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });

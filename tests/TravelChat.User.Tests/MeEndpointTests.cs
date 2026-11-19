@@ -3,39 +3,17 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.Routing;
-using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
 using Shouldly;
 using TravelChat.User.Data;
-using TravelChat.User.Features.CurrentUser;
-using Xunit;
+using TravelChat.User.Features.Me;
 
 namespace TravelChat.User.Tests;
-
-public sealed class UserApiFactory(string connectionString, string usersFile, RsaSecurityKey signingKey)
-    : WebApplicationFactory<Program>
-{
-    protected override void ConfigureWebHost(IWebHostBuilder builder)
-    {
-        builder.UseSetting("ConnectionStrings:Users", connectionString);
-        builder.UseSetting("Seed:UsersFile", usersFile);
-        builder.ConfigureTestServices(services =>
-            services.PostConfigure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, options =>
-            {
-                options.Authority = null;
-                options.ConfigurationManager = null;
-                options.TokenValidationParameters.IssuerSigningKey = signingKey;
-            }));
-    }
-}
 
 [Collection("postgres")]
 public sealed class MeEndpointTests(PostgresFixture postgres) : IAsyncLifetime

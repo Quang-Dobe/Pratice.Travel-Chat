@@ -87,7 +87,7 @@ public sealed class CachedFetchTests
         using var rig = new CacheRig(new Dictionary<string, string?> { ["ProviderKeys:places:geoapify"] = configured });
         var handler = new StubHandler(_ => StubHandler.Json("{}"));
 
-        var result = await rig.Fetch.GetAsync(KeyedClient, "paris", s_ttl, FetchFrom(handler), ct, requiresKey: true);
+        var result = await rig.Fetch.GetWithKeyAsync(KeyedClient, "paris", s_ttl, (_, token) => FetchFrom(handler)(token), ct);
 
         result.Status.ShouldBe(ProviderStatus.Unavailable);
         result.Message.ShouldNotBeNullOrWhiteSpace();
@@ -100,13 +100,12 @@ public sealed class CachedFetchTests
         var ct = TestContext.Current.CancellationToken;
         using var rig = new CacheRig(new Dictionary<string, string?> { ["ProviderKeys:places:geoapify"] = "secret" });
 
-        var result = await rig.Fetch.GetAsync(
+        var result = await rig.Fetch.GetWithKeyAsync(
             KeyedClient,
             "paris",
             s_ttl,
-            (key, _) => Task.FromResult(key ?? "none"),
-            ct,
-            requiresKey: true);
+            (key, _) => Task.FromResult(key),
+            ct);
 
         result.Data.ShouldBe("secret");
     }
@@ -207,10 +206,10 @@ public sealed class CachedFetchTests
         CachedFetch.Normalise(new DateOnly(2026, 3, 4)).ShouldBe("2026-03-04");
     }
 
-    private static Func<string?, CancellationToken, Task<string>> FetchFrom(HttpMessageHandler handler)
+    private static Func<CancellationToken, Task<string>> FetchFrom(HttpMessageHandler handler)
     {
         var factory = new StubHttpClientFactory(handler);
-        return async (_, token) =>
+        return async token =>
         {
             var http = factory.CreateClient(Client);
             using var response = await http.GetAsync(s_endpoint, token);

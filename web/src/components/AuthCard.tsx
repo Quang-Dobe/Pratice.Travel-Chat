@@ -1,7 +1,7 @@
 import FlightTakeoffRounded from '@mui/icons-material/FlightTakeoffRounded';
 import { Box, Paper } from '@mui/material';
 import type { ReactNode } from 'react';
-import { brandGradient } from '../theme';
+import { BrandMark } from './BrandMark';
 
 export function AuthCard({ children }: { children: ReactNode }) {
   return (
@@ -32,19 +32,7 @@ export function AuthCard({ children }: { children: ReactNode }) {
           gap: 2,
         }}
       >
-        <Box
-          sx={{
-            width: 64,
-            height: 64,
-            borderRadius: 4,
-            display: 'grid',
-            placeItems: 'center',
-            color: '#fff',
-            background: brandGradient,
-          }}
-        >
-          <FlightTakeoffRounded fontSize="large" />
-        </Box>
+        <BrandMark size={64} radius={4} icon={<FlightTakeoffRounded fontSize="large" />} />
         {children}
       </Paper>
     </Box>

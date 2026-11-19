@@ -23,16 +23,9 @@ public sealed partial class CachedFetch(HybridCache cache, ProviderKeys keys, IL
         string client,
         string query,
         TimeSpan ttl,
-        Func<string?, CancellationToken, Task<T>> fetch,
-        CancellationToken ct,
-        bool requiresKey = false)
+        Func<CancellationToken, Task<T>> fetch,
+        CancellationToken ct)
     {
-        var apiKey = keys.ForClient(client);
-        if (requiresKey && apiKey is null)
-        {
-            return ProviderResult.Unavailable<T>("no key set");
-        }
-
         var cacheKey = $"{client}:{NormaliseSegments(query)}";
         var options = new HybridCacheEntryOptions { Expiration = ttl, LocalCacheExpiration = ttl };
 
@@ -43,7 +36,7 @@ public sealed partial class CachedFetch(HybridCache cache, ProviderKeys keys, IL
                 async token =>
                 {
                     LogProviderCall(logger, client);
-                    return await fetch(apiKey, token);
+                    return await fetch(token);
                 },
                 options,
                 cancellationToken: ct);
@@ -57,6 +50,22 @@ public sealed partial class CachedFetch(HybridCache cache, ProviderKeys keys, IL
         {
             return ResultMapping.ToFailure(exception).ToResult<T>();
         }
+    }
+
+    public async Task<ProviderResult<T>> GetWithKeyAsync<T>(
+        string client,
+        string query,
+        TimeSpan ttl,
+        Func<string, CancellationToken, Task<T>> fetch,
+        CancellationToken ct)
+    {
+        var apiKey = keys.ForClient(client);
+        if (apiKey is null)
+        {
+            return ProviderResult.Unavailable<T>("no key set");
+        }
+
+        return await GetAsync(client, query, ttl, token => fetch(apiKey, token), ct);
     }
 
     private static string NormaliseSegments(string query) =>

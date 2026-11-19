@@ -1,11 +1,10 @@
-import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
 import { setupServer } from 'msw/node';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import type { AppData } from '../api/api';
+import type { AppData } from '../api/schemas';
 import { Sidebar } from './Sidebar';
 
 const data: AppData = {
@@ -28,7 +27,6 @@ const server = setupServer(
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
 afterEach(() => {
-  cleanup();
   server.resetHandlers();
   logoutCalls = 0;
 });

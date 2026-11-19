@@ -1,4 +1,4 @@
-namespace TravelChat.Query.Features.Shared;
+namespace TravelChat.Query.Features.Fetch;
 
 public static class GuardedHttpClientExtensions
 {

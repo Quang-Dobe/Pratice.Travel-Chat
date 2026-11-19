@@ -2,34 +2,10 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Shouldly;
-using Testcontainers.PostgreSql;
 using TravelChat.User.Data;
 using TravelChat.User.Features.Seed;
-using Xunit;
 
 namespace TravelChat.User.Tests;
-
-public sealed class PostgresFixture : IAsyncLifetime
-{
-    private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("postgres:17").Build();
-
-    public string ConnectionString => _container.GetConnectionString();
-
-    public async ValueTask InitializeAsync()
-    {
-        await _container.StartAsync(TestContext.Current.CancellationToken);
-        await using var db = CreateContext();
-        await db.Database.MigrateAsync(TestContext.Current.CancellationToken);
-    }
-
-    public UserDbContext CreateContext() =>
-        new(new DbContextOptionsBuilder<UserDbContext>().UseNpgsql(ConnectionString).Options);
-
-    public async ValueTask DisposeAsync() => await _container.DisposeAsync();
-}
-
-[CollectionDefinition("postgres")]
-public sealed class PostgresDefinition : ICollectionFixture<PostgresFixture>;
 
 [Collection("postgres")]
 public sealed class UserSeederTests(PostgresFixture postgres) : IAsyncLifetime, IDisposable

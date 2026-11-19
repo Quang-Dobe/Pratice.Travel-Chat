@@ -74,32 +74,14 @@ public static class ResultMapping
                 return false;
             }
 
-            foreach (var field in s_quotaFields)
-            {
-                if (root.OptionalString(field) is { } text && ContainsQuotaMarker(text))
-                {
-                    return true;
-                }
-            }
+            return s_quotaFields.Any(field => root.OptionalString(field) is { } text && ContainsQuotaMarker(text));
         }
         catch (JsonException)
         {
             return false;
         }
-
-        return false;
     }
 
-    private static bool ContainsQuotaMarker(string text)
-    {
-        foreach (var marker in s_quotaMarkers)
-        {
-            if (text.Contains(marker, StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
+    private static bool ContainsQuotaMarker(string text) =>
+        s_quotaMarkers.Any(marker => text.Contains(marker, StringComparison.OrdinalIgnoreCase));
 }

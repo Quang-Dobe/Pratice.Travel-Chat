@@ -75,40 +75,25 @@ public sealed class QueryClient(HttpClient http)
     {
         try
         {
-            await using var body = await response.Content.ReadAsStreamAsync(ct);
-            using var doc = await JsonDocument.ParseAsync(body, cancellationToken: ct);
-            var root = doc.RootElement;
-            var parts = new List<string>();
-            if (root.ValueKind == JsonValueKind.Object
-                && root.TryGetProperty("errors", out var errors)
-                && errors.ValueKind == JsonValueKind.Object)
+            var problem = await response.Content.ReadFromJsonAsync<HttpValidationProblemDetails>(s_json, ct);
+            if (problem is null)
             {
-                foreach (var field in errors.EnumerateObject())
-                {
-                    var messages = field.Value.ValueKind == JsonValueKind.Array
-                        ? field.Value.EnumerateArray().Where(m => m.ValueKind == JsonValueKind.String).Select(m => m.GetString()!)
-                        : [];
-                    parts.Add(field.Name + ": " + string.Join(' ', messages));
-                }
+                return QueryEnvelope.Failure();
             }
 
-            if (parts.Count == 0 && root.ValueKind == JsonValueKind.Object)
+            var parts = problem.Errors
+                ?.Select(field => $"{field.Key}: {string.Join(' ', field.Value ?? [])}")
+                .ToList() ?? [];
+            if (parts.Count == 0 && (problem.Detail ?? problem.Title) is { } text)
             {
-                foreach (var name in new[] { "detail", "title" })
-                {
-                    if (root.TryGetProperty(name, out var text) && text.ValueKind == JsonValueKind.String)
-                    {
-                        parts.Add(text.GetString()!);
-                        break;
-                    }
-                }
+                parts = [text];
             }
 
             return parts.Count == 0
                 ? QueryEnvelope.Failure()
                 : new QueryEnvelope(QueryStatus.Invalid, string.Join("; ", parts), null);
         }
-        catch (JsonException)
+        catch (Exception exception) when (exception is JsonException or NotSupportedException)
         {
             return QueryEnvelope.Failure();
         }
@@ -134,15 +119,8 @@ public sealed class QueryClient(HttpClient http)
             var envelope = await response.Content.ReadFromJsonAsync<QueryEnvelope>(s_json, ct);
             return envelope is null || string.IsNullOrEmpty(envelope.Status) ? QueryEnvelope.Failure() : envelope;
         }
-        catch (HttpRequestException)
-        {
-            return QueryEnvelope.Failure();
-        }
-        catch (JsonException)
-        {
-            return QueryEnvelope.Failure();
-        }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        catch (Exception exception) when (exception is HttpRequestException or JsonException
+            || (exception is OperationCanceledException && !ct.IsCancellationRequested))
         {
             return QueryEnvelope.Failure();
         }

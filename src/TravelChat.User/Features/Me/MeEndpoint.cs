@@ -3,7 +3,7 @@ using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.EntityFrameworkCore;
 using TravelChat.User.Data;
 
-namespace TravelChat.User.Features.CurrentUser;
+namespace TravelChat.User.Features.Me;
 
 public sealed record MeResponse(Guid Id, string Name, string Email);
 

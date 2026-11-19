@@ -11,10 +11,6 @@ public sealed class InternalTokenOptions
 {
     public const string SectionName = "InternalToken";
 
-    public string Issuer { get; set; } = InternalToken.Issuer;
-
-    public string Audience { get; set; } = InternalToken.Audience;
-
     public TimeSpan Lifetime { get; set; } = TimeSpan.FromMinutes(5);
 
     public int InternalPort { get; set; } = 8081;
@@ -29,6 +25,16 @@ public sealed record PublicJwk(
     [property: JsonPropertyName("e")] string E,
     [property: JsonPropertyName("alg")] string Alg,
     [property: JsonPropertyName("use")] string Use);
+
+public static class TokenIssuerRegistration
+{
+    public static IServiceCollection AddTokenIssuer(this IServiceCollection services)
+    {
+        services.AddOptions<InternalTokenOptions>().BindConfiguration(InternalTokenOptions.SectionName);
+        services.AddSingleton<TokenIssuer>();
+        return services;
+    }
+}
 
 public sealed class TokenIssuer : IDisposable
 {
@@ -73,8 +79,8 @@ public sealed class TokenIssuer : IDisposable
 
         var descriptor = new SecurityTokenDescriptor
         {
-            Issuer = _options.Issuer,
-            Audience = _options.Audience,
+            Issuer = InternalToken.Issuer,
+            Audience = InternalToken.Audience,
             Claims = claims,
             IssuedAt = issuedAt.UtcDateTime,
             Expires = issuedAt.Add(_options.Lifetime).UtcDateTime,

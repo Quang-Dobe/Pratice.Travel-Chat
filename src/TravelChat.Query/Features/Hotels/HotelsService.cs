@@ -1,6 +1,4 @@
 using System.Globalization;
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using TravelChat.Query.Features.Shared;
 
@@ -10,7 +8,6 @@ public sealed class HotelsService(IHttpClientFactory httpClients, CachedFetch ca
 {
     public const string ClientName = "hotels__serpapi";
 
-    private const string SearchUrl = "https://serpapi.com/search.json";
     private const int MaxOptions = 5;
     private const string CacheVersion = "v2";
 
@@ -31,27 +28,21 @@ public sealed class HotelsService(IHttpClientFactory httpClients, CachedFetch ca
             CachedFetch.Normalise(checkOut),
             travellers.ToString(CultureInfo.InvariantCulture));
 
-        return await cachedFetch.GetAsync(
+        return await cachedFetch.GetWithKeyAsync(
             ClientName,
             query,
             s_ttl,
             (apiKey, token) => FetchAsync(city.Trim(), checkIn, checkOut, travellers, apiKey, token),
-            ct,
-            requiresKey: true);
+            ct);
     }
 
     internal static IReadOnlyList<HotelOption> MapOptions(string body, int nights)
     {
         using var document = JsonDocument.Parse(body);
         var root = document.RootElement;
-        if (root.OptionalString("error") is { Length: > 0 } error)
+        if (SerpApi.IsNoResults(root))
         {
-            if (IsNoResults(error))
-            {
-                return [];
-            }
-
-            throw new ProviderFailureException(ProviderStatus.Error, "provider returned an error");
+            return [];
         }
 
         var options = new List<HotelOption>();
@@ -77,7 +68,7 @@ public sealed class HotelsService(IHttpClientFactory httpClients, CachedFetch ca
 
     private static HotelOption? ToOption(JsonElement property, int nights)
     {
-        var link = SafeHttpsLink(property.OptionalString("link"));
+        var link = SerpApi.HttpsLink(property.OptionalString("link"));
         var name = property.OptionalString("name");
         var price = StayTotal(property, nights);
         if (link is null || string.IsNullOrWhiteSpace(name) || price is null)
@@ -86,24 +77,14 @@ public sealed class HotelsService(IHttpClientFactory httpClients, CachedFetch ca
         }
 
         var token = property.OptionalString("property_token") ?? link;
-        return new HotelOption(ShortHash(token), Summarise(property, name), price.Value, link, ReadLocation(property));
+        return new HotelOption(SerpApi.ShortHash(token), Summarise(property, name), price.Value, link, ReadLocation(property));
     }
 
     private static HotelLocation? ReadLocation(JsonElement property)
     {
-        if (!property.TryGetProperty("gps_coordinates", out var gps)
-            || gps.ValueKind != JsonValueKind.Object
-            || !gps.TryGetProperty("latitude", out var latitude)
-            || latitude.ValueKind != JsonValueKind.Number
-            || !gps.TryGetProperty("longitude", out var longitude)
-            || longitude.ValueKind != JsonValueKind.Number)
-        {
-            return null;
-        }
-
-        var lat = latitude.GetDouble();
-        var lon = longitude.GetDouble();
-        return lat is >= -90 and <= 90 && lon is >= -180 and <= 180 ? new HotelLocation(lat, lon) : null;
+        return property.TryGetProperty("gps_coordinates", out var gps) && gps.LatLon("latitude", "longitude") is { } point
+            ? new HotelLocation(point.Lat, point.Lon)
+            : null;
     }
 
     private static decimal? StayTotal(JsonElement property, int nights)
@@ -144,33 +125,16 @@ public sealed class HotelsService(IHttpClientFactory httpClients, CachedFetch ca
         return string.Join(", ", parts);
     }
 
-    private static bool IsNoResults(string error) =>
-        error.Contains("hasn't returned any results", StringComparison.OrdinalIgnoreCase)
-        || error.Contains("no results", StringComparison.OrdinalIgnoreCase);
-
-    private static string? SafeHttpsLink(string? value) =>
-        Uri.TryCreate(value, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps
-            ? uri.AbsoluteUri
-            : null;
-
-    private static string ShortHash(string value) =>
-        Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)))[..12];
-
     private async Task<IReadOnlyList<HotelOption>> FetchAsync(
         string city,
         DateOnly checkIn,
         DateOnly checkOut,
         int travellers,
-        string? apiKey,
+        string apiKey,
         CancellationToken ct)
     {
-        if (apiKey is null)
-        {
-            throw new ProviderFailureException(ProviderStatus.Unavailable, "no key set");
-        }
-
         var uri = new Uri(
-            $"{SearchUrl}?engine=google_hotels&q={Uri.EscapeDataString(city)}"
+            $"{SerpApi.SearchUrl}?engine=google_hotels&q={Uri.EscapeDataString(city)}"
             + $"&check_in_date={CachedFetch.Normalise(checkIn)}&check_out_date={CachedFetch.Normalise(checkOut)}"
             + $"&adults={travellers.ToString(CultureInfo.InvariantCulture)}&currency=USD&hl=en"
             + $"&api_key={Uri.EscapeDataString(apiKey)}",

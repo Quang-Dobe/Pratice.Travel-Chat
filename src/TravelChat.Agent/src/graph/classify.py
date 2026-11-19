@@ -3,7 +3,7 @@ import json
 import logging
 from typing import Any, Literal
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.config import get_stream_writer
 from pydantic import BaseModel
 
@@ -11,7 +11,7 @@ from src.graph.deps import PlannerDeps
 from src.graph.state import PlannerState
 from src.providers.base import ChatProvider, quiet, structured_call
 from src.settings import Tier
-from src.utils.messages import ACTION, last_user_message, transcript
+from src.utils.messages import ACTION, last_user_message, reply_before_latest, transcript
 from src.utils.prompt import section, tag
 from src.utils.trip import Trip, missing_fields, today
 
@@ -39,13 +39,18 @@ itself: destination, origin, dates, length, travellers, budget (a new amount or 
 interests, or a different, cheaper, or better flight or hotel. With a plan card on screen, such a \
 change is still plan: the planner rebuilds the card. When <last_assistant_message> asks where the \
 budget should go, a reply that names a part of the trip (the hotel, the flights, things to do, or \
-places) is plan.
+places) is plan. A clear request to add, apply, or include places or ideas from earlier turns in \
+the plan is plan, and so is the reply to an assistant question about which places to add.
 answer for questions, suggestions, and recommendations such as food spots, attractions, things to \
-do, or tips, and for weather questions. Also answer for review questions, such as what people say \
-about a hotel, flight, restaurant, or place, and for a request to get the plan as a file (html, \
-docx, excel, or csv). A review question stays answer even when it names an airline, a route, an \
-origin or destination, or dates, because asking what people say does not change the trip. Earlier \
-planning turns do not make a question a planning request.
+do, or tips, and for weather questions. A question asking for suggestions or recommendations \
+stays answer even with a plan card on screen; only an instruction to put them in the plan is plan. \
+Also answer for a request to add places from earlier turns when it is unclear which ones are \
+meant or it names 5 or more, so the assistant can ask which ones. Also answer for review \
+questions, such as what people say about a hotel, flight, restaurant, or place, and for a \
+request to get the plan as a file (html, docx, excel, or csv). A review question stays answer \
+even when it names an airline, a route, an origin or destination, or dates, because asking what \
+people say does not change the trip. Earlier planning turns do not make a question a planning \
+request.
 </route>
 
 <examples>
@@ -58,6 +63,12 @@ Assistant asked where the extra budget should go; user: "mostly the flights" -> 
 "Go for a luxury budget instead" -> plan
 "Book a less expensive place to stay" -> plan
 "Increase my budget to 2500 dollars" -> plan
+"Add those ramen places to my plan" -> plan
+"Put the museums you mentioned in the itinerary" -> plan
+Assistant asked which places to add; user: "the ramen ones" -> plan
+After an answer listing cafes and museums; "add that one to the plan" -> answer
+"Can you suggest some cafes there?" -> answer
+"Any night markets you'd recommend?" -> answer
 "Where should we eat there?" -> answer
 "Is it rainy in May?" -> answer
 "What museums are worth seeing?" -> answer
@@ -107,9 +118,8 @@ def classify_input(state: PlannerState) -> str:
             context.append(tag("missing_fields", ", ".join(missing)))
     context.append(tag("plan_card", cards[-1]["status"] if cards else "none"))
     parts = [section("context", *context), tag("conversation", transcript(messages[:-1]))]
-    previous = messages[-2] if len(messages) > 1 else None
-    if isinstance(previous, AIMessage) and previous.text.strip():
-        parts.append(tag("last_assistant_message", previous.text.strip()))
+    if previous := reply_before_latest(messages):
+        parts.append(tag("last_assistant_message", previous))
     parts.append(tag("latest_message", messages[-1].text if messages else ""))
     return "\n\n".join(parts)
 
@@ -133,7 +143,7 @@ async def run(state: PlannerState, deps: PlannerDeps) -> dict[str, Any]:
     provider = deps.chat()
     deciding = structured_call(
         provider,
-        provider.model(deps.settings.answer_tier),
+        provider.model(deps.settings.classify_tier),
         Classification,
         [
             SystemMessage(CLASSIFY_PROMPT),
