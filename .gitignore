@@ -9,15 +9,18 @@ docs/**/*.requirement.md
 docs/**/*.status.md
 docs/**/*.test.md
 docs/**/present
+docs/**/superpowers
 docs/domain
 docs/memory
 docs/narrative
 docs/references.md
 **/docs/narrative
 **/docs/domain
+**/docs/memory
 repo-layout.md
 .claude
 CLAUDE.md
+.memory
 
 .env
 .env.*
