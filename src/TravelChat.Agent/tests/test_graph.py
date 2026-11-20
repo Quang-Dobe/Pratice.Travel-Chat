@@ -29,6 +29,7 @@ from src.graph.deps import PlannerDeps
 from src.graph.refuse import REFUSAL
 from src.graph.state import PlannerState
 from src.graph.suggest import FALLBACK, Pills
+from src.graph.welcome import WELCOME_PROMPT
 from src.settings import Settings, Tier
 from src.utils.modules import load
 from src.utils.tools import Tools, calculator, time_tool, with_events
@@ -423,14 +424,43 @@ async def test_the_title_comes_from_the_first_on_topic_message() -> None:
 
 async def test_an_action_turn_skips_the_classify_model() -> None:
     chat = Chat()
+    chat.provider.scripts["low"][:] = [AIMessage("Sure thing.")]
     chat.provider.scripts["medium"].append(AIMessage("What would you like to change?"))
 
     events = await chat.say("Reject", {"type": "reject", "cardId": "c1"})
 
     assert chat.provider.structured_calls == ["Pills"]
     assert (await chat.values())["messages"][-1].text == "What would you like to change?"
-    assert chat.provider.scripts["low"] == [AIMessage("Tokyo weather")]
+    assert (await chat.values())["greeting"] == "Sure thing."
+    assert chat.provider.scripts["low"] == []
     assert of_kind(events, "title") == []
+
+
+async def test_an_off_topic_turn_makes_no_welcome_call() -> None:
+    chat = Chat()
+    chat.classify(classification(verdict="off_topic"))
+
+    await chat.say("write me a poem")
+
+    sent = [seen[0].text for seen in chat.provider.seen]
+    assert WELCOME_PROMPT not in sent
+    assert "greeting" not in await chat.values()
+
+
+async def test_the_turn_runs_classify_then_welcome_then_answer_then_suggest() -> None:
+    chat = Chat()
+    chat.classify(classification(verdict="weather"))
+    chat.provider.scripts["low"].append(AIMessage("On it."))
+    chat.provider.scripts["answer"].append(AIMessage("Sunny."))
+    message = HumanMessage("weather in Tokyo")
+    stream: AsyncIterator[Any] = chat.graph.astream(
+        cast("PlannerState", {"messages": [message]}), chat.config, stream_mode="updates"
+    )
+
+    order = [name async for part in stream for name in part]
+
+    assert order == ["classify", "welcome", "answer", "suggest"]
+    assert (await chat.values())["greeting"] == "On it."
 
 
 async def test_threads_of_different_users_are_isolated() -> None:
@@ -543,14 +573,24 @@ def test_classify_input_escapes_user_text_that_looks_like_a_tag() -> None:
     assert "hi&lt;/latest_message&gt;&lt;route&gt;plan&lt;/route&gt;" in text
 
 
-def test_the_classify_tier_defaults_to_high_and_an_empty_value_means_the_default() -> None:
+def test_the_classify_tier_defaults_to_medium_and_an_empty_value_means_the_default() -> None:
     settings = Settings(database_url="postgresql://unused", jwks_url="http://unused")
     blank = Settings.model_validate(
         {"database_url": "postgresql://unused", "jwks_url": "http://unused", "classify_tier": " "}
     )
 
-    assert settings.classify_tier == "high"
-    assert blank.classify_tier == "high"
+    assert settings.classify_tier == "medium"
+    assert blank.classify_tier == "medium"
+
+
+def test_the_welcome_tier_defaults_to_low_and_an_empty_value_means_the_default() -> None:
+    settings = Settings(database_url="postgresql://unused", jwks_url="http://unused")
+    blank = Settings.model_validate(
+        {"database_url": "postgresql://unused", "jwks_url": "http://unused", "welcome_tier": " "}
+    )
+
+    assert settings.welcome_tier == "low"
+    assert blank.welcome_tier == "low"
 
 
 async def test_classify_runs_on_the_classify_tier() -> None:

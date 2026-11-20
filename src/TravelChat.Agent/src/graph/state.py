@@ -39,6 +39,7 @@ class PlannerState(MessagesState):
     ask_budget: bool
     action: dict[str, Any] | None
     titled: bool
+    greeting: str
     trip: Trip
     cards: list[PlanCard]
     pills: list[Pill]

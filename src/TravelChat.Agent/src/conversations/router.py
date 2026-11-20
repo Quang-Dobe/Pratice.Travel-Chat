@@ -1,4 +1,5 @@
 import logging
+import time
 from collections.abc import AsyncIterator, Sequence
 from datetime import datetime
 from typing import Annotated, Any, Literal, Self, cast
@@ -20,6 +21,7 @@ from src.exports.render import content_type
 from src.graph.builder import ChatGraph, thread_config
 from src.graph.deps import PlannerDeps
 from src.graph.state import Pill, PlanCard, PlannerState, card_payload
+from src.graph.welcome import GREETING
 from src.utils.messages import ACTION, ARTIFACTS, SOURCES, TURN_TOOLS
 from src.utils.tools import tool_kind
 from src.utils.usage import tracing_callbacks
@@ -29,8 +31,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
 STREAM_MODES: list[StreamMode] = ["messages", "custom"]
-TOKEN_NODES = frozenset({"answer", "ask_missing", "ask_change", "ask_budget"})
+TOKEN_NODES = frozenset({"welcome", "answer", "ask_missing", "ask_change", "ask_budget"})
 PARAGRAPH_BREAK = "\n\n"
+APP_TEXT = object()
 FORWARDED_EVENTS = frozenset(
     {"tool_call", "plan_card", "pills", "notice", "sources", "map_pins", "artifact"}
 )
@@ -236,10 +239,14 @@ def _build_messages(
         elif isinstance(message, AIMessage) and message.text:
             card = by_message.get(message.id or "")
             plan_card = PlanCardItem.model_validate(card_payload(card)) if card else None
+            greeting = message.additional_kwargs.get(GREETING) or ""
+            text = str(message.text)
+            if greeting.strip():
+                text = f"{greeting}{PARAGRAPH_BREAK}{text}"
             items.append(
                 MessageItem(
                     role="assistant",
-                    text=message.text,
+                    text=text,
                     tool_calls=_tool_calls(message),
                     plan_card=plan_card,
                     sources=_sources(message),
@@ -254,6 +261,11 @@ def _build_messages(
     return items
 
 
+def _log_first_words(conversation_id: UUID, started: float) -> None:
+    elapsed_ms = round((time.monotonic() - started) * 1000)
+    logger.info("First words for conversation %s after %s ms", conversation_id, elapsed_ms)
+
+
 async def _stream_turn(
     request: Request,
     conversation: ConversationRow,
@@ -261,6 +273,7 @@ async def _stream_turn(
     provider_errors: type[Exception],
     turn_input: PlannerState,
 ) -> AsyncIterator[ServerSentEvent]:
+    started = time.monotonic()
     graph: ChatGraph = request.app.state.graph
     config = thread_config(user.uid, conversation.id)
     if callbacks := tracing_callbacks():
@@ -268,18 +281,22 @@ async def _stream_turn(
     stream: AsyncIterator[Any] = graph.astream(
         turn_input, config, stream_mode=STREAM_MODES, version="v2", subgraphs=True
     )
-    last_chunk: Any = None
+    last_source: object = None
     wrote_text = False
+    logged = False
     try:
         async for part in stream:
             if part["type"] == "messages":
                 chunk, metadata = part["data"]
                 if metadata.get("langgraph_node") in TOKEN_NODES and chunk.text:
-                    if chunk.id != last_chunk:
-                        last_chunk = chunk.id
+                    if chunk.id != last_source:
+                        last_source = chunk.id
                         if wrote_text:
                             yield _token(PARAGRAPH_BREAK)
                     wrote_text = True
+                    if not logged:
+                        logged = True
+                        _log_first_words(conversation.id, started)
                     yield _token(str(chunk.text))
             elif part["type"] == "custom":
                 data: dict[str, Any] = part["data"]
@@ -289,7 +306,14 @@ async def _stream_turn(
                         request.app.state.pool, conversation.id, user.uid, data["title"]
                     )
                 elif name == "token":
+                    if last_source is not APP_TEXT:
+                        last_source = APP_TEXT
+                        if wrote_text:
+                            yield _token(PARAGRAPH_BREAK)
                     wrote_text = True
+                    if not logged:
+                        logged = True
+                        _log_first_words(conversation.id, started)
                     yield _token(str(data["text"]))
                 elif name in FORWARDED_EVENTS:
                     yield ServerSentEvent(
