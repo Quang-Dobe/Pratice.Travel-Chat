@@ -56,7 +56,10 @@ services:
       AzureAd__ClientId: ${AzureAd__ClientId:-}
       AzureAd__ClientSecret: ${AzureAd__ClientSecret:-}
       Maps__ApiKey: ${GEOAPIFY_API_KEY:-}
+      ConnectionStrings__Redis: redis:6379
     depends_on:
+      redis:
+        condition: service_healthy
       q-user:
         condition: service_healthy
       q-agent:

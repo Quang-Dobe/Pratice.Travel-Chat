@@ -7,6 +7,12 @@ export const Me = z.object({
 });
 export type Me = z.infer<typeof Me>;
 
+export const SessionTimeLeft = z.object({
+  secondsLeft: z.number().int().min(0),
+  endsBy: z.enum(['idle', 'limit']),
+});
+export type SessionTimeLeft = z.infer<typeof SessionTimeLeft>;
+
 export const ConversationItem = z.object({
   id: z.string(),
   title: z.string(),

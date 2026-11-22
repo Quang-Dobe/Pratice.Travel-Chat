@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -41,7 +42,7 @@ public sealed class SingleSourceTests
     [Fact]
     public void IssuedTokenUsesTheSharedIssuerAndAudience()
     {
-        using var issuer = new TokenIssuer(Options.Create(new InternalTokenOptions()));
+        using var issuer = new TokenIssuer(Options.Create(new InternalTokenOptions()), RSA.Create(2048));
         var jwt = new JsonWebTokenHandler().ReadJsonWebToken(issuer.Mint("oid-1"));
 
         jwt.Issuer.ShouldBe(InternalToken.Issuer);

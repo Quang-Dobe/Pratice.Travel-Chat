@@ -6,6 +6,7 @@ import {
   ConversationList,
   ConversationSchema,
   Me,
+  SessionTimeLeft,
 } from './schemas';
 import { parseSseFrames, type StreamEvent } from './sse';
 
@@ -48,6 +49,11 @@ export async function apiFetch(path: string, init?: RequestInit): Promise<Respon
 export async function getMe(): Promise<Me> {
   const response = await apiFetch('/api/users/me');
   return Me.parse(await response.json());
+}
+
+export async function getSessionTimeLeft(): Promise<SessionTimeLeft> {
+  const response = await apiFetch('/api/session');
+  return SessionTimeLeft.parse(await response.json());
 }
 
 export async function listConversations(): Promise<ConversationItem[]> {

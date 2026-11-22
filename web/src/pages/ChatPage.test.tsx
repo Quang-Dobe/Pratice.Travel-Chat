@@ -45,7 +45,9 @@ function gatedStream(first: Uint8Array, rest: Uint8Array[]) {
   return { body, release };
 }
 
-const server = setupServer();
+const server = setupServer(
+  http.get('*/api/session', () => HttpResponse.json({ secondsLeft: 1800, endsBy: 'idle' })),
+);
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
 afterEach(() => {

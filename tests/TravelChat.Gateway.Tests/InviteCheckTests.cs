@@ -1,5 +1,6 @@
 using System.Net;
 using System.Security.Claims;
+using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
@@ -35,7 +36,7 @@ public sealed class InviteCheckTests(GatewayFactory factory) : IClassFixture<Gat
 
     private static async Task<TokenValidatedContext> RunAsync(QUserStub stub, ClaimsPrincipal principal)
     {
-        using var issuer = new TokenIssuer(Options.Create(new InternalTokenOptions()));
+        using var issuer = new TokenIssuer(Options.Create(new InternalTokenOptions()), RSA.Create(2048));
         using var httpClient = new HttpClient(stub, disposeHandler: false)
         {
             BaseAddress = new Uri("http://q-user:8080"),
