@@ -19,6 +19,7 @@ from src.graph.builder import build_graph
 from src.graph.deps import PlannerDeps
 from src.providers.base import make_provider
 from src.settings import get_settings
+from src.starters.router import router as starters_router
 from src.utils.tools import load_tools
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
@@ -82,6 +83,7 @@ logging.config.dictConfig(
 )
 
 app = FastAPI(title="q-agent", lifespan=lifespan)
+app.include_router(starters_router)
 app.include_router(conversations_router)
 
 

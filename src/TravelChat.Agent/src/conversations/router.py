@@ -22,6 +22,7 @@ from src.graph.builder import ChatGraph, thread_config
 from src.graph.deps import PlannerDeps
 from src.graph.state import Pill, PlanCard, PlannerState, card_payload
 from src.graph.welcome import GREETING
+from src.starters import repository as starters_repository
 from src.utils.messages import ACTION, ARTIFACTS, SOURCES, TURN_TOOLS
 from src.utils.tools import tool_kind
 from src.utils.usage import tracing_callbacks
@@ -266,6 +267,26 @@ def _log_first_words(conversation_id: UUID, started: float) -> None:
     logger.info("First words for conversation %s after %s ms", conversation_id, elapsed_ms)
 
 
+async def _save_summary(
+    request: Request, conversation: ConversationRow, user: CurrentUser, data: dict[str, Any]
+) -> None:
+    fields = {key: value for key, value in data.items() if key != "event"}
+    try:
+        await starters_repository.upsert_summary(
+            request.app.state.pool, conversation.id, user.uid, **fields
+        )
+    except Exception:
+        logger.exception("Saving the trip summary for conversation %s failed", conversation.id)
+
+
+async def _remember(request: Request, user: CurrentUser) -> bool:
+    try:
+        return await starters_repository.get_enabled(request.app.state.pool, user.uid)
+    except Exception:
+        logger.exception("Reading the suggestion setting failed; not remembering this turn")
+        return False
+
+
 async def _stream_turn(
     request: Request,
     conversation: ConversationRow,
@@ -305,6 +326,8 @@ async def _stream_turn(
                     await repository.set_title(
                         request.app.state.pool, conversation.id, user.uid, data["title"]
                     )
+                elif name == "summary":
+                    await _save_summary(request, conversation, user, data)
                 elif name == "token":
                     if last_source is not APP_TEXT:
                         last_source = APP_TEXT
@@ -403,11 +426,12 @@ async def send_message(
         yield _notice(NOT_CONFIGURED)
         yield _done()
         return
+    remember = await _remember(request, user)
     kwargs: dict[str, Any] = {}
     if body.action is not None:
         kwargs[ACTION] = body.action.model_dump(by_alias=True, exclude_none=True)
     message = HumanMessage(body.text, additional_kwargs=kwargs)
-    turn_input = cast("PlannerState", {"messages": [message]})
+    turn_input = cast("PlannerState", {"messages": [message], "remember": remember})
     errors = deps.provider.errors
     async for event in _stream_turn(request, conversation, user, errors, turn_input):
         yield event

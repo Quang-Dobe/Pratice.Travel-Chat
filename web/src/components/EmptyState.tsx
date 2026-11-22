@@ -1,15 +1,18 @@
 import AutoAwesomeRounded from '@mui/icons-material/AutoAwesomeRounded';
 import BeachAccessRounded from '@mui/icons-material/BeachAccessRounded';
+import HistoryRounded from '@mui/icons-material/HistoryRounded';
 import LandscapeRounded from '@mui/icons-material/LandscapeRounded';
 import RamenDiningRounded from '@mui/icons-material/RamenDiningRounded';
 import SavingsRounded from '@mui/icons-material/SavingsRounded';
-import { Box, Card, CardActionArea, Typography } from '@mui/material';
+import { Box, Card, CardActionArea, Skeleton, Typography } from '@mui/material';
 import type { ReactNode } from 'react';
 import { BrandMark } from './BrandMark';
 
-type Starter = { icon: ReactNode; title: string; prompt: string };
+export const MAX_STARTERS = 4;
 
-const starters: Starter[] = [
+type Starter = { icon: ReactNode; title: string; prompt?: string };
+
+const fixedStarters: Starter[] = [
   {
     icon: <RamenDiningRounded />,
     title: 'Food and hiking in Tokyo',
@@ -32,13 +35,93 @@ const starters: Starter[] = [
   },
 ];
 
+const gridSx = {
+  display: 'grid',
+  gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' },
+  gap: 2,
+} as const;
+
 type EmptyStateProps = {
   name: string | undefined;
   disabled: boolean;
+  /** `null` while the past-trip starters are loading. */
+  history: string[] | null;
   onPick: (prompt: string) => void;
 };
 
-export function EmptyState({ name, disabled, onPick }: EmptyStateProps) {
+function StarterCard({
+  starter,
+  disabled,
+  onPick,
+}: {
+  starter: Starter;
+  disabled: boolean;
+  onPick: (prompt: string) => void;
+}) {
+  return (
+    <Card variant="outlined" sx={{ borderRadius: 4, textAlign: 'left' }}>
+      <CardActionArea
+        disabled={disabled}
+        onClick={() => onPick(starter.prompt ?? starter.title)}
+        sx={{ p: 2, height: '100%', display: 'flex', alignItems: 'flex-start', gap: 1.5 }}
+      >
+        <Box sx={{ color: 'primary.main', display: 'flex', pt: 0.25 }}>{starter.icon}</Box>
+        <Box sx={{ flexGrow: 1 }}>
+          <Typography variant="subtitle2">{starter.title}</Typography>
+          {starter.prompt && (
+            <Typography variant="body2" color="text.secondary">
+              {starter.prompt}
+            </Typography>
+          )}
+        </Box>
+      </CardActionArea>
+    </Card>
+  );
+}
+
+function StarterGrid({
+  history,
+  disabled,
+  onPick,
+}: Pick<EmptyStateProps, 'history' | 'disabled' | 'onPick'>) {
+  if (history === null) {
+    return (
+      <Box sx={gridSx} role="status" aria-label="Loading suggestions">
+        {fixedStarters.map((starter) => (
+          <Skeleton key={starter.title} variant="rounded" height={88} sx={{ borderRadius: 4 }} />
+        ))}
+      </Box>
+    );
+  }
+  if (history.length === 0) {
+    return (
+      <Box sx={gridSx}>
+        {fixedStarters.map((starter) => (
+          <StarterCard key={starter.title} starter={starter} disabled={disabled} onPick={onPick} />
+        ))}
+      </Box>
+    );
+  }
+  return (
+    <Box sx={{ textAlign: 'left' }}>
+      <Typography variant="caption" color="text.secondary" component="p" sx={{ mb: 1 }}>
+        From your past trips
+      </Typography>
+      <Box sx={gridSx} role="group" aria-label="Suggestions">
+        {history.slice(0, MAX_STARTERS).map((text, index) => (
+          <StarterCard
+            key={`${index}-${text}`}
+            starter={{ icon: <HistoryRounded />, title: text }}
+            disabled={disabled}
+            onPick={onPick}
+          />
+        ))}
+      </Box>
+    </Box>
+  );
+}
+
+export function EmptyState({ name, disabled, history, onPick }: EmptyStateProps) {
   const firstName = name?.trim().split(/\s+/)[0];
   return (
     <Box
@@ -53,29 +136,7 @@ export function EmptyState({ name, disabled, onPick }: EmptyStateProps) {
           Hi, I am your travel buddy. Tell me where, when and what you love, and we will plan a
           lovely trip together.
         </Typography>
-        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 2 }}>
-          {starters.map((starter) => (
-            <Card
-              key={starter.title}
-              variant="outlined"
-              sx={{ borderRadius: 4, textAlign: 'left' }}
-            >
-              <CardActionArea
-                disabled={disabled}
-                onClick={() => onPick(starter.prompt)}
-                sx={{ p: 2, height: '100%', display: 'flex', alignItems: 'flex-start', gap: 1.5 }}
-              >
-                <Box sx={{ color: 'primary.main', display: 'flex', pt: 0.25 }}>{starter.icon}</Box>
-                <Box sx={{ flexGrow: 1 }}>
-                  <Typography variant="subtitle2">{starter.title}</Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    {starter.prompt}
-                  </Typography>
-                </Box>
-              </CardActionArea>
-            </Card>
-          ))}
-        </Box>
+        <StarterGrid history={history} disabled={disabled} onPick={onPick} />
       </Box>
     </Box>
   );

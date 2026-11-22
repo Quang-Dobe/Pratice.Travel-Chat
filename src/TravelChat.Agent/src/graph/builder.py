@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any, Literal
 from uuid import UUID
 
@@ -6,7 +7,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from src.graph import answer, classify, refuse, suggest, welcome
+from src.graph import answer, classify, refuse, suggest, summarize, welcome
 from src.graph.deps import PlannerDeps
 from src.graph.plan import build_plan
 from src.graph.state import PlannerState
@@ -45,7 +46,10 @@ def build_graph(checkpointer: BaseCheckpointSaver[str], deps: PlannerDeps) -> Ch
         return await answer.run(state, deps)
 
     async def suggest_node(state: PlannerState) -> dict[str, Any]:
-        return {**await suggest.run(state, deps), **welcome.attach(state)}
+        suggested, summarized = await asyncio.gather(
+            suggest.run(state, deps), summarize.run(state, deps)
+        )
+        return {**suggested, **summarized, **welcome.attach(state)}
 
     builder = StateGraph(PlannerState)
     builder.add_node(CLASSIFY, classify_node)

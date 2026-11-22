@@ -3,10 +3,13 @@ import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
   ApiError,
+  clearStarters,
   getConversation,
+  getStarters,
   loadAppData,
   NotInvitedError,
   sendMessage,
+  setStarters,
   UnauthorizedError,
 } from './api';
 import { parseSseFrames, type StreamEvent } from './sse';
@@ -480,6 +483,52 @@ describe('getConversation', () => {
       sources: [],
       artifacts: [],
     });
+  });
+});
+
+describe('starters', () => {
+  it('gets the starters and keeps at most four items', async () => {
+    server.use(
+      http.get('*/api/conversations/starters', () =>
+        HttpResponse.json({ enabled: true, items: ['a', 'b', 'c', 'd', 'e'] }),
+      ),
+    );
+
+    expect(await getStarters()).toEqual({ enabled: true, items: ['a', 'b', 'c', 'd'] });
+  });
+
+  it('rejects a starters payload of the wrong shape', async () => {
+    server.use(
+      http.get('*/api/conversations/starters', () => HttpResponse.json({ enabled: 'yes' })),
+    );
+
+    await expect(getStarters()).rejects.toThrow();
+  });
+
+  it('puts the setting with a json body and returns the stored value', async () => {
+    let received: unknown;
+    server.use(
+      http.put('*/api/conversations/starters/setting', async ({ request }) => {
+        received = await request.json();
+        return HttpResponse.json({ enabled: false });
+      }),
+    );
+
+    expect(await setStarters(false)).toBe(false);
+    expect(received).toEqual({ enabled: false });
+  });
+
+  it('deletes the starter history', async () => {
+    let method = '';
+    server.use(
+      http.delete('*/api/conversations/starters/history', ({ request }) => {
+        method = request.method;
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+
+    await expect(clearStarters()).resolves.toBeUndefined();
+    expect(method).toBe('DELETE');
   });
 });
 

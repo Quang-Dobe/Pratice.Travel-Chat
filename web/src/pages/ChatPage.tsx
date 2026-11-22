@@ -1,7 +1,13 @@
 import { Alert, Box, Stack, Typography } from '@mui/material';
 import { useEffect, useRef, useState } from 'react';
 import { useLoaderData, useNavigate, useRevalidator, useRouteLoaderData } from 'react-router';
-import { createConversation, getConversation, sendMessage, UnauthorizedError } from '../api/api';
+import {
+  createConversation,
+  getConversation,
+  getStarters,
+  sendMessage,
+  UnauthorizedError,
+} from '../api/api';
 import type {
   Action,
   AppData,
@@ -12,7 +18,7 @@ import type {
 } from '../api/schemas';
 import type { StreamEvent } from '../api/sse';
 import { Composer } from '../components/Composer';
-import { EmptyState } from '../components/EmptyState';
+import { EmptyState, MAX_STARTERS } from '../components/EmptyState';
 import { initials } from '../components/initials';
 import { MessageBubble } from '../components/MessageBubble';
 import { SessionWarning } from '../components/SessionWarning';
@@ -25,6 +31,9 @@ import {
 } from './chatMessages';
 import { clearResume, readResume, saveResume } from './resume';
 import { useSessionTimeout } from './useSessionTimeout';
+
+/** How long the new-chat screen shows the loading cards before falling back to the fixed ones. */
+const STARTERS_WAIT_MS = 2000;
 
 function isAbort(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError';
@@ -40,6 +49,7 @@ function ChatView({ conversation }: { conversation: Conversation | undefined }) 
   const [picks, setPicks] = useState<Record<string, Picked>>({});
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [history, setHistory] = useState<string[] | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const endedRef = useRef(false);
@@ -53,6 +63,33 @@ function ChatView({ conversation }: { conversation: Conversation | undefined }) 
   }, [ended]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
+
+  const isNewChat = conversation === undefined;
+  useEffect(() => {
+    if (!isNewChat || app === undefined) {
+      return;
+    }
+    const controller = new AbortController();
+    let settled = false;
+    const show = (items: string[]) => {
+      if (!settled) {
+        settled = true;
+        setHistory(items);
+      }
+    };
+    const fallback = window.setTimeout(() => {
+      show([]);
+      controller.abort();
+    }, STARTERS_WAIT_MS);
+    getStarters(controller.signal)
+      .then((starters) => show(starters.enabled ? starters.items.slice(0, MAX_STARTERS) : []))
+      .catch(() => show([]));
+    return () => {
+      settled = true;
+      window.clearTimeout(fallback);
+      controller.abort();
+    };
+  }, [isNewChat, app]);
 
   useEffect(() => {
     if (meId === undefined) {
@@ -207,7 +244,14 @@ function ChatView({ conversation }: { conversation: Conversation | undefined }) 
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
-      {isEmpty && <EmptyState name={app?.me?.name} disabled={streaming} onPick={submit} />}
+      {isEmpty && (
+        <EmptyState
+          name={app?.me?.name}
+          disabled={streaming}
+          history={app === undefined ? [] : history}
+          onPick={submit}
+        />
+      )}
       <Box
         ref={scrollRef}
         sx={{

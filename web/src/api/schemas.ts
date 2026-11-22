@@ -125,6 +125,16 @@ export const Pill = z.object({
 });
 export type Pill = z.infer<typeof Pill>;
 
+const MAX_STARTERS = 4;
+
+export const Starters = z.object({
+  enabled: z.boolean(),
+  items: z.array(z.string()).transform((items) => items.slice(0, MAX_STARTERS)),
+});
+export type Starters = z.infer<typeof Starters>;
+
+export const StarterSetting = z.object({ enabled: z.boolean() });
+
 export type Action =
   | { type: 'approve'; cardId: string; flightId: string; hotelId: string }
   | { type: 'reject'; cardId: string };

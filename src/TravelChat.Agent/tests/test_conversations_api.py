@@ -5,7 +5,7 @@ import time
 from collections import Counter
 from collections.abc import Iterator, Sequence
 from dataclasses import replace
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import Any, Literal, cast
 from uuid import UUID, uuid4
 
@@ -41,8 +41,10 @@ from src.graph.deps import PlannerDeps
 from src.graph.refuse import REFUSAL
 from src.graph.state import PlanCard
 from src.graph.suggest import Pills
+from src.graph.summarize import TripSummary
 from src.main import app
 from src.settings import Settings, Tier, get_settings
+from src.starters import repository as starters_repository
 from src.utils.modules import load
 from src.utils.reviews import PinName, PinNames
 from src.utils.tools import Tools, calculator, time_tool, with_events
@@ -192,6 +194,7 @@ class FakeProvider:
             "Pills": [Pills(items=["Plan a trip", "Check flights"])],
             "ItineraryDraft": [itinerary_module.ItineraryDraft(days=days)],
             "PinNames": [PinNames(items=[])],
+            "TripSummary": [TripSummary(trip_type="food", preferences=["street food"])],
         }
         queue_turns(self.queues, classification())
         self.model_calls = []
@@ -1737,7 +1740,7 @@ def test_e2e_12_no_words_appear_before_classify_has_finished(
     ("kind", "expected"),
     [
         ("travel", {"low": 2, "medium": 3}),
-        ("plan", {"low": 2, "medium": 4}),
+        ("plan", {"low": 3, "medium": 4}),
     ],
 )
 def test_e2e_13_every_other_step_keeps_its_model_tier(
@@ -1770,3 +1773,380 @@ def test_e2e_14_the_greeting_then_the_answer_then_the_pills_arrive_in_order(
     assert token_positions[-1] < events.index("pills")
     assert events[-2:] == ["pills", "done"]
     assert frames[-2][1] == {"items": PILLS}
+
+
+SUMMARY_BUDGET = 3
+
+
+def script_dated_plan() -> tuple[str, str]:
+    script_demo()
+    start = (today() + timedelta(days=30)).isoformat()
+    end = (today() + timedelta(days=33)).isoformat()
+    queue_turns(
+        PROVIDER.queues,
+        classification(
+            route="plan",
+            verdict="travel",
+            destination="Tokyo",
+            origin="Singapore",
+            start_date=start,
+            end_date=end,
+            interests=["food"],
+        ),
+    )
+    PROVIDER.queues["TripSummary"] = [
+        TripSummary(trip_type="food", preferences=["street food"])
+    ] * SUMMARY_BUDGET
+    return start, end
+
+
+def summary_calls() -> int:
+    return SUMMARY_BUDGET - len(PROVIDER.queues["TripSummary"])
+
+
+def stored_summaries(client: TestClient, headers: dict[str, str]) -> list[Any]:
+    assert client.portal is not None
+    pool = app.state.pool
+    uid = UUID(headers[USER_HEADER])
+    return list(client.portal.call(starters_repository.newest_summaries, pool, uid))
+
+
+def switch_remembering(client: TestClient, headers: dict[str, str], enabled: bool) -> None:
+    assert client.portal is not None
+    pool = app.state.pool
+    uid = UUID(headers[USER_HEADER])
+    client.portal.call(starters_repository.set_enabled, pool, uid, enabled)
+
+
+def test_a_plan_turn_stores_one_summary_for_its_owner_with_destination_and_dates(
+    client: TestClient, user_a: dict[str, str], user_b: dict[str, str]
+) -> None:
+    start, end = script_dated_plan()
+    conversation_id, _ = run_turn(client, user_a, MESSAGES["plan"])
+
+    [row] = stored_summaries(client, user_a)
+
+    assert str(row.conversation_id) == conversation_id
+    assert row.destination == "Tokyo"
+    assert (row.start_date.isoformat(), row.end_date.isoformat()) == (start, end)
+    assert row.trip_type == "food"
+    assert row.preferences == ["street food"]
+    assert stored_summaries(client, user_b) == []
+    assert summary_calls() == 1
+
+
+def test_no_summary_frame_is_ever_sent(client: TestClient, user_a: dict[str, str]) -> None:
+    script_dated_plan()
+
+    _, frames = run_turn(client, user_a, MESSAGES["plan"])
+
+    assert "summary" not in events_of(frames)
+    assert "notice" not in events_of(frames)
+    assert events_of(frames)[-2:] == ["pills", "done"]
+
+
+def test_with_remembering_off_there_is_no_summary_call_and_no_row(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    switch_remembering(client, user_a, False)
+    script_dated_plan()
+
+    run_turn(client, user_a, MESSAGES["plan"])
+
+    assert summary_calls() == 0
+    assert stored_summaries(client, user_a) == []
+
+
+def test_a_second_turn_with_the_same_details_makes_no_second_summary_call(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    script_dated_plan()
+    conversation_id, _ = run_turn(client, user_a, MESSAGES["plan"])
+    assert summary_calls() == 1
+    script_weather_answer()
+    queue_turns(PROVIDER.queues, classification())
+
+    send(client, user_a, conversation_id, "and what about the weather?")
+
+    assert summary_calls() == 1
+    assert len(stored_summaries(client, user_a)) == 1
+
+
+def test_when_saving_the_summary_fails_the_turn_still_ends_with_pills_then_done(
+    client: TestClient, user_a: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def failing_upsert(*args: Any, **fields: Any) -> bool:
+        raise ValueError("bad date")
+
+    monkeypatch.setattr(starters_repository, "upsert_summary", failing_upsert)
+    script_dated_plan()
+
+    _, frames = run_turn(client, user_a, MESSAGES["plan"])
+
+    events = events_of(frames)
+    assert events[-2:] == ["pills", "done"]
+    assert "notice" not in events
+    assert stored_summaries(client, user_a) == []
+
+
+STARTERS_PATH = "/conversations/starters"
+MADE_UP_PHRASE = "zorblax-quux-7731"
+
+
+def next_march() -> tuple[str, str]:
+    now = today()
+    year = now.year if now.month < 3 else now.year + 1
+    return date(year, 3, 10).isoformat(), date(year, 3, 14).isoformat()
+
+
+def script_trip(
+    destination: str,
+    *,
+    dates: tuple[str, str] | None = None,
+    trip_type: str = "food",
+    preferences: list[str] | None = None,
+) -> None:
+    script_demo()
+    fields: dict[str, Any] = {"length_days": 3}
+    if dates is not None:
+        fields = {"start_date": dates[0], "end_date": dates[1]}
+    queue_turns(
+        PROVIDER.queues,
+        classification(
+            route="plan",
+            verdict="travel",
+            destination=destination,
+            origin="Singapore",
+            interests=["food"],
+            **fields,
+        ),
+    )
+    PROVIDER.queues["TripSummary"] = [
+        TripSummary(trip_type=trip_type, preferences=preferences or [])
+    ]
+
+
+def discuss_trip(
+    client: TestClient,
+    headers: dict[str, str],
+    destination: str,
+    *,
+    text: str | None = None,
+    dates: tuple[str, str] | None = None,
+    trip_type: str = "food",
+    preferences: list[str] | None = None,
+) -> str:
+    PROVIDER.reset()
+    script_trip(destination, dates=dates, trip_type=trip_type, preferences=preferences)
+    conversation_id, _ = run_turn(client, headers, text or f"3 days in {destination}")
+    return conversation_id
+
+
+def starters_of(client: TestClient, headers: dict[str, str]) -> dict[str, Any]:
+    response = client.get(STARTERS_PATH, headers=headers)
+    assert response.status_code == 200
+    body: dict[str, Any] = response.json()
+    return body
+
+
+def set_starters(client: TestClient, headers: dict[str, str], enabled: bool) -> None:
+    response = client.put(f"{STARTERS_PATH}/setting", json={"enabled": enabled}, headers=headers)
+    assert response.status_code == 200
+    assert response.json() == {"enabled": enabled}
+
+
+def clear_starters(client: TestClient, headers: dict[str, str]) -> None:
+    assert client.delete(f"{STARTERS_PATH}/history", headers=headers).status_code == 204
+
+
+def test_gs_e2e_1_a_past_trip_shows_up_as_one_to_four_starters_about_it(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    discuss_trip(client, user_a, "Da Nang", dates=next_march())
+
+    body = starters_of(client, user_a)
+
+    assert body["enabled"] is True
+    assert 1 <= len(body["items"]) <= 4
+    assert all("Da Nang" in item for item in body["items"])
+    assert "March" in body["items"][0]
+
+
+def test_gs_e2e_3_the_setting_is_on_for_a_user_who_never_touched_it(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    assert starters_of(client, user_a) == {"enabled": True, "items": []}
+
+
+def test_gs_e2e_5_clearing_the_history_removes_starters_and_keeps_every_conversation(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    ids = [discuss_trip(client, user_a, city) for city in ("Da Nang", "Hanoi", "Hue")]
+    assert starters_of(client, user_a)["items"] != []
+    before = [detail_of(client, user_a, conversation_id) for conversation_id in ids]
+
+    clear_starters(client, user_a)
+
+    assert starters_of(client, user_a) == {"enabled": True, "items": []}
+    after = [detail_of(client, user_a, conversation_id) for conversation_id in ids]
+    assert after == before
+    assert all(len(detail["messages"]) == 2 for detail in after)
+    listed = client.get("/conversations", headers=user_a).json()["items"]
+    assert {item["id"] for item in listed} == set(ids)
+
+
+def test_gs_e2e_6_a_new_trip_after_a_clear_feeds_new_starters(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    discuss_trip(client, user_a, "Da Nang")
+    clear_starters(client, user_a)
+
+    discuss_trip(client, user_a, "Hanoi")
+
+    items = starters_of(client, user_a)["items"]
+    assert items != []
+    assert all("Hanoi" in item for item in items)
+    assert not any("Da Nang" in item for item in items)
+
+
+def test_gs_e2e_7_the_setting_survives_a_new_sign_in(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    discuss_trip(client, user_a, "Da Nang")
+
+    set_starters(client, user_a, False)
+
+    for _ in range(2):
+        assert starters_of(client, user_a) == {"enabled": False, "items": []}
+    assert client.portal is not None
+    uid = UUID(user_a[USER_HEADER])
+    assert client.portal.call(starters_repository.get_enabled, app.state.pool, uid) is False
+
+
+def test_gs_e2e_8_follow_up_pills_behave_as_today_with_past_summaries(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    discuss_trip(client, user_a, "Da Nang")
+    assert starters_of(client, user_a)["enabled"] is True
+    script_kind("travel", greeted=False)
+
+    conversation_id, frames = run_turn(client, user_a, MESSAGES["travel"])
+
+    assert events_of(frames)[-2:] == ["pills", "done"]
+    assert "summary" not in events_of(frames)
+    items = frames[-2][1]["items"]
+    assert 2 <= len(items) <= 4
+    assert items == PILLS
+    assert detail_of(client, user_a, conversation_id)["messages"][-1]["pills"] == PILLS
+
+
+def test_gs_e2e_9_another_users_trips_never_reach_a_user_with_none(
+    client: TestClient, user_a: dict[str, str], user_b: dict[str, str]
+) -> None:
+    discuss_trip(client, user_a, "Da Nang")
+    assert starters_of(client, user_a)["items"] != []
+
+    body = starters_of(client, user_b)
+
+    assert body == {"enabled": True, "items": []}
+    assert "Da Nang" not in json.dumps(body)
+
+
+async def summary_columns(pool: Any) -> set[str]:
+    async with pool.connection() as connection:
+        cursor = await connection.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'trip_summaries'"
+        )
+        return {row["column_name"] for row in await cursor.fetchall()}
+
+
+def test_gs_e2e_10_the_kept_summary_holds_only_trip_fields(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    text = f"5 days in Da Nang, I adore {MADE_UP_PHRASE} noodles"
+    conversation_id = discuss_trip(
+        client, user_a, "Da Nang", text=text, preferences=["street food"]
+    )
+    detail = detail_of(client, user_a, conversation_id)
+    assert MADE_UP_PHRASE in detail["messages"][0]["text"]
+
+    [row] = stored_summaries(client, user_a)
+
+    assert row.destination == "Da Nang"
+    assert row.trip_type == "food"
+    assert row.preferences == ["street food"]
+    assert MADE_UP_PHRASE not in repr(row)
+    assert MADE_UP_PHRASE not in json.dumps(starters_of(client, user_a))
+    assert client.portal is not None
+    columns = client.portal.call(summary_columns, app.state.pool)
+    assert columns == {
+        "conversation_id",
+        "user_id",
+        "destination",
+        "start_date",
+        "end_date",
+        "trip_type",
+        "preferences",
+        "updated_at",
+    }
+
+
+def test_gs_e2e_11_opening_new_chat_makes_no_model_call(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    discuss_trip(client, user_a, "Da Nang")
+    PROVIDER.model_calls.clear()
+
+    for _ in range(3):
+        assert starters_of(client, user_a)["items"] != []
+
+    assert PROVIDER.model_calls == []
+
+
+def test_gs_e2e_13_with_the_setting_off_new_trips_are_not_kept_but_old_ones_stay(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    discuss_trip(client, user_a, "Da Nang")
+    set_starters(client, user_a, False)
+
+    discuss_trip(client, user_a, "Hanoi")
+    assert [row.destination for row in stored_summaries(client, user_a)] == ["Da Nang"]
+    set_starters(client, user_a, True)
+
+    items = starters_of(client, user_a)["items"]
+    assert items != []
+    assert all("Da Nang" in item for item in items)
+    assert not any("Hanoi" in item for item in items)
+
+
+def test_gs_e2e_14_the_summary_follows_a_changed_destination(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    conversation_id = discuss_trip(client, user_a, "Paris")
+    assert any("Paris" in item for item in starters_of(client, user_a)["items"])
+    PROVIDER.reset()
+    script_trip("Rome")
+
+    send(client, user_a, conversation_id, "Change the destination to Rome")
+
+    [row] = stored_summaries(client, user_a)
+    assert row.destination == "Rome"
+    items = starters_of(client, user_a)["items"]
+    assert items != []
+    assert all("Rome" in item for item in items)
+    assert not any("Paris" in item for item in items)
+
+
+def test_gs_e2e_15_only_the_five_newest_summarized_conversations_count(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    cities = ["Lima", "Cairo", "Hue", "Cairo", "Hue", "Cairo"]
+    for city in cities:
+        discuss_trip(client, user_a, city)
+
+    items = starters_of(client, user_a)["items"]
+
+    assert 1 <= len(items) <= 4
+    assert not any("Lima" in item for item in items)
+    assert any("Cairo" in item for item in items)
+    assert any("Hue" in item for item in items)
