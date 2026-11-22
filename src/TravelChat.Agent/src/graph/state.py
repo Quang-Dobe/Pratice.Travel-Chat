@@ -3,7 +3,7 @@ from typing import Any, Literal, NotRequired, TypedDict
 from langgraph.graph import MessagesState
 
 from src.utils.tools import ToolUse
-from src.utils.trip import Budget, Day, Option, ReviewPin, Trip
+from src.utils.trip import Brief, Budget, Day, Option, ReviewPin, Trip
 
 type CardStatus = Literal["open", "approved", "replaced"]
 
@@ -39,11 +39,14 @@ class PlannerState(MessagesState):
     ask_budget: bool
     action: dict[str, Any] | None
     titled: bool
+    greeting: str
     trip: Trip
     cards: list[PlanCard]
     pills: list[Pill]
     calls: list[ToolUse]
     note: str | None
+    remember: bool
+    summarized: Brief | None
 
 
 def card_payload(card: PlanCard) -> dict[str, Any]:

@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
 import { setupServer } from 'msw/node';
@@ -45,7 +45,10 @@ function gatedStream(first: Uint8Array, rest: Uint8Array[]) {
   return { body, release };
 }
 
-const server = setupServer();
+const server = setupServer(
+  http.get('*/api/session', () => HttpResponse.json({ secondsLeft: 1800, endsBy: 'idle' })),
+  http.get('*/api/conversations/starters', () => HttpResponse.json({ enabled: true, items: [] })),
+);
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
 afterEach(() => {
@@ -425,6 +428,155 @@ describe('ChatPage plan card', () => {
       ).toBeEnabled(),
     );
     expect(screen.getByRole('button', { name: 'Approve' })).toBeEnabled();
+  });
+});
+
+describe('ChatPage starters', () => {
+  const startersRoute = (body: { enabled: boolean; items: string[] }) =>
+    http.get('*/api/conversations/starters', () => HttpResponse.json(body));
+
+  const findPill = (name: string) => screen.findByRole('button', { name }, { timeout: 4000 });
+
+  it('shows the past-trip pills once loaded', async () => {
+    server.use(startersRoute({ enabled: true, items: ['Tokyo again', 'Lisbon in spring'] }));
+    renderChat('/');
+
+    expect(await findPill('Tokyo again')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Lisbon in spring' })).toBeInTheDocument();
+    expect(screen.getByText('From your past trips')).toBeInTheDocument();
+    expect(screen.queryByText('Food and hiking in Tokyo')).not.toBeInTheDocument();
+  });
+
+  it('shows only the 4 newest past-trip starters', async () => {
+    const items = ['Trip 1', 'Trip 2', 'Trip 3', 'Trip 4', 'Trip 5', 'Trip 6'];
+    server.use(startersRoute({ enabled: true, items }));
+    renderChat('/');
+
+    await findPill('Trip 1');
+    const group = screen.getByRole('group', { name: 'Suggestions' });
+    const names = within(group)
+      .getAllByRole('button')
+      .map((button) => button.textContent);
+    expect(names).toEqual(['Trip 1', 'Trip 2', 'Trip 3', 'Trip 4']);
+  });
+
+  it('shows the fixed starters when there are no past trips', async () => {
+    server.use(startersRoute({ enabled: true, items: [] }));
+    renderChat('/');
+
+    expect(await screen.findByText('Food and hiking in Tokyo')).toBeInTheDocument();
+    expect(screen.queryByText('From your past trips')).not.toBeInTheDocument();
+  });
+
+  it('posts a picked pill as the first message', async () => {
+    let created: unknown;
+    let sent: unknown;
+    server.use(
+      startersRoute({ enabled: true, items: ['Tokyo again'] }),
+      http.post('*/api/conversations', async ({ request }) => {
+        created = await request.json();
+        return HttpResponse.json(
+          { id: 'c1', title: 'Tokyo again', createdAt: '2026-10-01T00:00:00Z' },
+          { status: 201 },
+        );
+      }),
+      http.post('*/api/conversations/c1/messages', async ({ request }) => {
+        sent = await request.json();
+        return eventStream([frame('token', { text: 'Great choice' }), frame('done', {})]);
+      }),
+      http.get('*/api/conversations/c1', () => HttpResponse.json(savedConversation)),
+      http.get('*/api/conversations', () => HttpResponse.json({ items: [] })),
+    );
+    renderChat('/');
+
+    await userEvent.click(await findPill('Tokyo again'));
+
+    await waitFor(() => expect(sent).toEqual({ text: 'Tokyo again', action: null }));
+    expect(created).toEqual({ text: 'Tokyo again' });
+  });
+
+  it('shows the fixed starters and keeps the composer usable when the request fails', async () => {
+    let asked = false;
+    server.use(
+      http.get('*/api/conversations/starters', () => {
+        asked = true;
+        return new HttpResponse(null, { status: 500 });
+      }),
+    );
+    renderChat('/');
+
+    await waitFor(() => expect(asked).toBe(true));
+    expect(await screen.findByLabelText('Message')).toBeEnabled();
+    expect(await screen.findByText('Food and hiking in Tokyo')).toBeInTheDocument();
+    expect(screen.queryByText('From your past trips')).not.toBeInTheDocument();
+  });
+
+  it('shows loading cards while the request is held, then the fixed starters', async () => {
+    server.use(http.get('*/api/conversations/starters', () => new Promise<never>(() => undefined)));
+    renderChat('/');
+
+    expect(await screen.findByRole('status', { name: 'Loading suggestions' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Message')).toBeEnabled();
+    expect(screen.queryByText('Food and hiking in Tokyo')).not.toBeInTheDocument();
+
+    expect(
+      await screen.findByText('Food and hiking in Tokyo', undefined, { timeout: 4000 }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('status', { name: 'Loading suggestions' })).not.toBeInTheDocument();
+    expect(screen.queryByText('From your past trips')).not.toBeInTheDocument();
+  });
+
+  it('shows the fixed starters when starters are disabled', async () => {
+    let asked = false;
+    server.use(
+      http.get('*/api/conversations/starters', () => {
+        asked = true;
+        return HttpResponse.json({ enabled: false, items: ['Hidden trip'] });
+      }),
+    );
+    renderChat('/');
+
+    await waitFor(() => expect(asked).toBe(true));
+    expect(await screen.findByLabelText('Message')).toBeEnabled();
+    expect(await screen.findByText('Food and hiking in Tokyo')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Hidden trip' })).not.toBeInTheDocument();
+  });
+
+  it('does not ask for starters on a saved conversation', async () => {
+    let asked = false;
+    server.use(
+      http.get('*/api/conversations/starters', () => {
+        asked = true;
+        return HttpResponse.json({ enabled: true, items: ['Nope'] });
+      }),
+      http.get('*/api/conversations/c1', () => HttpResponse.json(savedConversation)),
+    );
+    renderChat('/c/c1');
+
+    await screen.findByText('First part second part');
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(asked).toBe(false);
+  });
+
+  it('asks for the starters again after a revalidation', async () => {
+    let calls = 0;
+    let items = ['Tokyo again'];
+    server.use(
+      http.get('*/api/conversations/starters', () => {
+        calls += 1;
+        return HttpResponse.json({ enabled: true, items });
+      }),
+    );
+    const router = renderChat('/');
+    await findPill('Tokyo again');
+    expect(calls).toBe(1);
+
+    items = ['Lisbon in spring'];
+    await act(() => router.revalidate());
+
+    expect(await findPill('Lisbon in spring')).toBeInTheDocument();
+    expect(calls).toBe(2);
+    expect(screen.queryByRole('button', { name: 'Tokyo again' })).not.toBeInTheDocument();
   });
 });
 

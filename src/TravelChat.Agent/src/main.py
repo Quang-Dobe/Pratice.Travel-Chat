@@ -1,3 +1,4 @@
+import logging.config
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from http import HTTPStatus
@@ -18,6 +19,7 @@ from src.graph.builder import build_graph
 from src.graph.deps import PlannerDeps
 from src.providers.base import make_provider
 from src.settings import get_settings
+from src.starters.router import router as starters_router
 from src.utils.tools import load_tools
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
@@ -70,7 +72,18 @@ def problem(
     )
 
 
+logging.config.dictConfig(
+    {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {"std": {"format": "%(asctime)s %(levelname)s %(name)s %(message)s"}},
+        "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "std"}},
+        "loggers": {"src": {"level": "INFO", "handlers": ["console"]}},
+    }
+)
+
 app = FastAPI(title="q-agent", lifespan=lifespan)
+app.include_router(starters_router)
 app.include_router(conversations_router)
 
 

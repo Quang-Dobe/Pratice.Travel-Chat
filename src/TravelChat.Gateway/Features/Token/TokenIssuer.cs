@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.JsonWebTokens;
@@ -31,7 +32,11 @@ public static class TokenIssuerRegistration
     public static IServiceCollection AddTokenIssuer(this IServiceCollection services)
     {
         services.AddOptions<InternalTokenOptions>().BindConfiguration(InternalTokenOptions.SectionName);
-        services.AddSingleton<TokenIssuer>();
+        services.AddSingleton<ISigningKeySlot, RedisSigningKeySlot>();
+        services.AddSingleton<SigningKeyStore>();
+        services.AddSingleton(provider => new TokenIssuer(
+            provider.GetRequiredService<IOptions<InternalTokenOptions>>(),
+            provider.GetRequiredService<SigningKeyStore>().LoadOrCreate()));
         return services;
     }
 }
@@ -43,24 +48,27 @@ public sealed class TokenIssuer : IDisposable
     private readonly JsonWebTokenHandler _handler = new();
     private readonly InternalTokenOptions _options;
 
-    public TokenIssuer(IOptions<InternalTokenOptions> options)
+    public TokenIssuer(IOptions<InternalTokenOptions> options, RSA key)
     {
         _options = options.Value;
-        _rsa = RSA.Create(2048);
+        _rsa = key;
 
-        var keyId = Guid.NewGuid().ToString("N");
+        var publicParameters = _rsa.ExportParameters(includePrivateParameters: false);
+        var modulus = Base64UrlEncoder.Encode(publicParameters.Modulus);
+        var exponent = Base64UrlEncoder.Encode(publicParameters.Exponent);
+        var keyId = Thumbprint(exponent, modulus);
+
         _credentials = new SigningCredentials(
             new RsaSecurityKey(_rsa) { KeyId = keyId },
             SecurityAlgorithms.RsaSha256);
 
-        var publicParameters = _rsa.ExportParameters(includePrivateParameters: false);
-        PublicJwk = new PublicJwk(
-            keyId,
-            "RSA",
-            Base64UrlEncoder.Encode(publicParameters.Modulus),
-            Base64UrlEncoder.Encode(publicParameters.Exponent),
-            SecurityAlgorithms.RsaSha256,
-            "sig");
+        PublicJwk = new PublicJwk(keyId, "RSA", modulus, exponent, SecurityAlgorithms.RsaSha256, "sig");
+    }
+
+    private static string Thumbprint(string exponent, string modulus)
+    {
+        var canonical = $$"""{"e":"{{exponent}}","kty":"RSA","n":"{{modulus}}"}""";
+        return Base64UrlEncoder.Encode(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
     }
 
     public PublicJwk PublicJwk { get; }

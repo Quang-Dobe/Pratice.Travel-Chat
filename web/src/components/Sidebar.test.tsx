@@ -17,29 +17,50 @@ const data: AppData = {
 };
 
 let logoutCalls = 0;
+let loaderCalls = 0;
 
 const server = setupServer(
   http.post('*/auth/logout', () => {
     logoutCalls += 1;
     return new HttpResponse(null, { status: 204 });
   }),
+  http.get('*/api/conversations/starters', () => HttpResponse.json({ enabled: true, items: [] })),
 );
+
+const SWITCH_LABEL = 'Suggestions from my past trips';
+
+async function openProfile() {
+  await userEvent.click(screen.getByRole('button', { name: 'Profile' }));
+  const dialog = await screen.findByRole('dialog');
+  const toggle = within(dialog).getByLabelText(SWITCH_LABEL);
+  await waitFor(() => expect(toggle).toBeEnabled());
+  return { dialog, toggle };
+}
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
 afterEach(() => {
   server.resetHandlers();
   logoutCalls = 0;
+  loaderCalls = 0;
 });
 afterAll(() => server.close());
 
 function renderSidebar() {
   const router = createMemoryRouter(
     [
-      { path: '/', element: <Sidebar {...data} /> },
+      {
+        id: 'app',
+        path: '/',
+        element: <Sidebar {...data} />,
+        loader: () => {
+          loaderCalls += 1;
+          return null;
+        },
+      },
       { path: '/c/:id', element: <Sidebar {...data} /> },
       { path: '/login', element: <p>Login screen</p> },
     ],
-    { initialEntries: ['/'] },
+    { initialEntries: ['/'], hydrationData: { loaderData: { app: null } } },
   );
   render(<RouterProvider router={router} />);
   return router;
@@ -97,5 +118,90 @@ describe('Sidebar', () => {
     const dialog = await screen.findByRole('dialog');
     expect(within(dialog).getByText('Ada Lovelace')).toBeInTheDocument();
     expect(within(dialog).getByText('ada@example.com')).toBeInTheDocument();
+  });
+
+  it('shows the suggestions switch on by default', async () => {
+    renderSidebar();
+
+    const { toggle } = await openProfile();
+
+    expect(toggle).toBeChecked();
+  });
+
+  it('sends PUT enabled false when toggled and shows the switch off', async () => {
+    let body: unknown;
+    server.use(
+      http.put('*/api/conversations/starters/setting', async ({ request }) => {
+        body = await request.json();
+        return HttpResponse.json({ enabled: false });
+      }),
+    );
+    renderSidebar();
+    const { toggle } = await openProfile();
+
+    await userEvent.click(toggle);
+
+    await waitFor(() => expect(toggle).not.toBeChecked());
+    await waitFor(() => expect(toggle).toBeEnabled());
+    expect(body).toEqual({ enabled: false });
+    await waitFor(() => expect(loaderCalls).toBe(1));
+  });
+
+  it('shows the error and keeps the value when the PUT fails', async () => {
+    server.use(
+      http.put(
+        '*/api/conversations/starters/setting',
+        () => new HttpResponse(null, { status: 500 }),
+      ),
+    );
+    renderSidebar();
+    const { dialog, toggle } = await openProfile();
+
+    await userEvent.click(toggle);
+
+    expect(await within(dialog).findByRole('alert')).toBeInTheDocument();
+    await waitFor(() => expect(toggle).toBeEnabled());
+    expect(toggle).toBeChecked();
+    expect(loaderCalls).toBe(0);
+  });
+
+  it('sends DELETE on clear and shows the note', async () => {
+    let deletes = 0;
+    server.use(
+      http.delete('*/api/conversations/starters/history', () => {
+        deletes += 1;
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    renderSidebar();
+    const { dialog } = await openProfile();
+
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Clear suggestion history' }));
+
+    expect(await within(dialog).findByText('Suggestion history cleared.')).toBeInTheDocument();
+    expect(deletes).toBe(1);
+    await waitFor(() => expect(loaderCalls).toBe(1));
+  });
+
+  it('shows the error when the DELETE fails', async () => {
+    server.use(
+      http.delete(
+        '*/api/conversations/starters/history',
+        () => new HttpResponse(null, { status: 500 }),
+      ),
+    );
+    renderSidebar();
+    const { dialog } = await openProfile();
+
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Clear suggestion history' }));
+
+    expect(await within(dialog).findByRole('alert')).toBeInTheDocument();
+    expect(within(dialog).queryByText('Suggestion history cleared.')).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        within(dialog).getByRole('button', { name: 'Clear suggestion history' }),
+      ).toBeEnabled(),
+    );
+    expect(loaderCalls).toBe(0);
   });
 });

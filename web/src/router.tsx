@@ -11,10 +11,16 @@ import { AppErrorBoundary, AppLayout } from './components/AppLayout';
 import { ChatPage } from './pages/ChatPage';
 import { DeniedPage } from './pages/DeniedPage';
 import { LoginPage } from './pages/LoginPage';
+import { readResume } from './pages/resume';
 
-async function appLoader(): Promise<AppData | Response> {
+async function appLoader({ request }: LoaderFunctionArgs): Promise<AppData | Response> {
   try {
-    return await loadAppData();
+    const data = await loadAppData();
+    const record = readResume(data.me.id);
+    if (record?.conversationId && new URL(request.url).pathname === '/') {
+      return redirect(`/c/${record.conversationId}`);
+    }
+    return data;
   } catch (error) {
     if (error instanceof UnauthorizedError) {
       return redirect('/login');

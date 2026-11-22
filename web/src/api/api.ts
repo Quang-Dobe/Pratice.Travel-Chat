@@ -6,6 +6,9 @@ import {
   ConversationList,
   ConversationSchema,
   Me,
+  SessionTimeLeft,
+  StarterSetting,
+  Starters,
 } from './schemas';
 import { parseSseFrames, type StreamEvent } from './sse';
 
@@ -50,6 +53,11 @@ export async function getMe(): Promise<Me> {
   return Me.parse(await response.json());
 }
 
+export async function getSessionTimeLeft(): Promise<SessionTimeLeft> {
+  const response = await apiFetch('/api/session');
+  return SessionTimeLeft.parse(await response.json());
+}
+
 export async function listConversations(): Promise<ConversationItem[]> {
   const response = await apiFetch('/api/conversations');
   return ConversationList.parse(await response.json()).items;
@@ -81,6 +89,24 @@ export async function createConversation(text: string): Promise<ConversationItem
 export async function getConversation(id: string): Promise<Conversation> {
   const response = await apiFetch(`/api/conversations/${encodeURIComponent(id)}`);
   return ConversationSchema.parse(await response.json());
+}
+
+export async function getStarters(signal?: AbortSignal): Promise<Starters> {
+  const response = await apiFetch('/api/conversations/starters', { signal: signal ?? null });
+  return Starters.parse(await response.json());
+}
+
+export async function setStarters(enabled: boolean): Promise<boolean> {
+  const response = await apiFetch('/api/conversations/starters/setting', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  });
+  return StarterSetting.parse(await response.json()).enabled;
+}
+
+export async function clearStarters(): Promise<void> {
+  await apiFetch('/api/conversations/starters/history', { method: 'DELETE' });
 }
 
 async function* streamEvents(

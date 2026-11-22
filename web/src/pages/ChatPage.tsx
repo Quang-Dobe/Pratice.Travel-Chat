@@ -1,7 +1,13 @@
 import { Alert, Box, Stack, Typography } from '@mui/material';
 import { useEffect, useRef, useState } from 'react';
 import { useLoaderData, useNavigate, useRevalidator, useRouteLoaderData } from 'react-router';
-import { createConversation, getConversation, sendMessage, UnauthorizedError } from '../api/api';
+import {
+  createConversation,
+  getConversation,
+  getStarters,
+  sendMessage,
+  UnauthorizedError,
+} from '../api/api';
 import type {
   Action,
   AppData,
@@ -12,9 +18,10 @@ import type {
 } from '../api/schemas';
 import type { StreamEvent } from '../api/sse';
 import { Composer } from '../components/Composer';
-import { EmptyState } from '../components/EmptyState';
+import { EmptyState, MAX_STARTERS } from '../components/EmptyState';
 import { initials } from '../components/initials';
 import { MessageBubble } from '../components/MessageBubble';
+import { SessionWarning } from '../components/SessionWarning';
 import {
   applyEvent,
   applyMapPins,
@@ -22,6 +29,11 @@ import {
   latestCardIndex,
   newMessage,
 } from './chatMessages';
+import { clearResume, readResume, saveResume } from './resume';
+import { useSessionTimeout } from './useSessionTimeout';
+
+/** How long the new-chat screen shows the loading cards before falling back to the fixed ones. */
+const STARTERS_WAIT_MS = 2000;
 
 function isAbort(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError';
@@ -37,10 +49,69 @@ function ChatView({ conversation }: { conversation: Conversation | undefined }) 
   const [picks, setPicks] = useState<Record<string, Picked>>({});
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [history, setHistory] = useState<string[] | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const endedRef = useRef(false);
+  const savedRef = useRef(false);
+  const { warning, ended, staying, stay, end } = useSessionTimeout();
+  const meId = app?.me?.id;
+  const shownConversationId = conversation?.id ?? null;
+
+  useEffect(() => {
+    endedRef.current = ended;
+  }, [ended]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
+
+  const isNewChat = conversation === undefined;
+  useEffect(() => {
+    if (!isNewChat || app === undefined) {
+      return;
+    }
+    const controller = new AbortController();
+    let settled = false;
+    const show = (items: string[]) => {
+      if (!settled) {
+        settled = true;
+        setHistory(items);
+      }
+    };
+    const fallback = window.setTimeout(() => {
+      show([]);
+      controller.abort();
+    }, STARTERS_WAIT_MS);
+    getStarters(controller.signal)
+      .then((starters) => show(starters.enabled ? starters.items.slice(0, MAX_STARTERS) : []))
+      .catch(() => show([]));
+    return () => {
+      settled = true;
+      window.clearTimeout(fallback);
+      controller.abort();
+    };
+  }, [isNewChat, app]);
+
+  useEffect(() => {
+    if (meId === undefined) {
+      return;
+    }
+    const record = readResume(meId);
+    if (record !== null && record.conversationId === shownConversationId) {
+      setDraft(record.draft);
+    }
+    clearResume();
+  }, [meId, shownConversationId]);
+
+  useEffect(() => {
+    if (!ended || streaming || savedRef.current) {
+      return;
+    }
+    savedRef.current = true;
+    if (meId !== undefined) {
+      saveResume({ userId: meId, conversationId: conversationId ?? null, draft });
+    }
+    void navigate('/login');
+  }, [ended, streaming, meId, conversationId, draft, navigate]);
 
   useEffect(() => {
     const scroller = scrollRef.current;
@@ -90,13 +161,17 @@ function ChatView({ conversation }: { conversation: Conversation | undefined }) 
       }
       setDraft(text);
       if (caught instanceof UnauthorizedError) {
-        await navigate('/login');
+        end();
       } else if (!isAbort(caught)) {
         setError('The message could not be sent. Please try again.');
-        if (id !== undefined) {
+        if (id !== undefined && !endedRef.current) {
           await revalidator.revalidate();
         }
       }
+      setStreaming(false);
+      return;
+    }
+    if (endedRef.current) {
       setStreaming(false);
       return;
     }
@@ -104,6 +179,9 @@ function ChatView({ conversation }: { conversation: Conversation | undefined }) 
       await syncCards(id);
     }
     setStreaming(false);
+    if (endedRef.current) {
+      return;
+    }
     try {
       if (isNew) {
         await navigate(`/c/${id}`, { replace: true });
@@ -166,7 +244,14 @@ function ChatView({ conversation }: { conversation: Conversation | undefined }) 
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
-      {isEmpty && <EmptyState name={app?.me?.name} disabled={streaming} onPick={submit} />}
+      {isEmpty && (
+        <EmptyState
+          name={app?.me?.name}
+          disabled={streaming}
+          history={app === undefined ? [] : history}
+          onPick={submit}
+        />
+      )}
       <Box
         ref={scrollRef}
         sx={{
@@ -203,6 +288,9 @@ function ChatView({ conversation }: { conversation: Conversation | undefined }) 
       </Box>
       <Box sx={{ px: { xs: 2, md: 4 }, pb: 2.5, pt: 1 }}>
         <Box sx={{ maxWidth: 820, mx: 'auto' }}>
+          {warning && (
+            <SessionWarning secondsLeft={warning.secondsLeft} busy={staying} onStay={stay} />
+          )}
           {error && (
             <Alert severity="error" sx={{ mb: 1.5 }}>
               {error}
@@ -222,6 +310,14 @@ function ChatView({ conversation }: { conversation: Conversation | undefined }) 
 
 export function ChatPage() {
   const conversation = useLoaderData<Conversation | null | undefined>();
+  const app = useRouteLoaderData<AppData | undefined>('app');
+  const meId = app?.me?.id;
+
+  useEffect(() => {
+    if (conversation === null && meId !== undefined) {
+      clearResume();
+    }
+  }, [conversation, meId]);
 
   if (conversation === null) {
     return (

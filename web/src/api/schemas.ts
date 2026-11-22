@@ -7,6 +7,12 @@ export const Me = z.object({
 });
 export type Me = z.infer<typeof Me>;
 
+export const SessionTimeLeft = z.object({
+  secondsLeft: z.number().int().min(0),
+  endsBy: z.enum(['idle', 'limit']),
+});
+export type SessionTimeLeft = z.infer<typeof SessionTimeLeft>;
+
 export const ConversationItem = z.object({
   id: z.string(),
   title: z.string(),
@@ -118,6 +124,16 @@ export const Pill = z.object({
   action: z.enum(['approve', 'reject']).nullable().default(null),
 });
 export type Pill = z.infer<typeof Pill>;
+
+const MAX_STARTERS = 4;
+
+export const Starters = z.object({
+  enabled: z.boolean(),
+  items: z.array(z.string()).transform((items) => items.slice(0, MAX_STARTERS)),
+});
+export type Starters = z.infer<typeof Starters>;
+
+export const StarterSetting = z.object({ enabled: z.boolean() });
 
 export type Action =
   | { type: 'approve'; cardId: string; flightId: string; hotelId: string }

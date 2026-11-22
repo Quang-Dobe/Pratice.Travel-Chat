@@ -36,7 +36,8 @@ class Settings(BaseSettings):
     answer_tier: Tier = "medium"
     title_tier: Tier = "low"
     helper_tier: Tier = "low"
-    classify_tier: Tier = "high"
+    classify_tier: Tier = "medium"
+    welcome_tier: Tier = "low"
 
     anthropic_api_key: SecretStr = SecretStr("")
     anthropic_base_url: str = ""
@@ -57,6 +58,7 @@ class Settings(BaseSettings):
         "title_tier",
         "helper_tier",
         "classify_tier",
+        "welcome_tier",
         "anthropic_base_url",
         "openai_base_url",
         "azure_openai_endpoint",

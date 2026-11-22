@@ -21,3 +21,23 @@ CREATE TABLE IF NOT EXISTS exports (
 
 CREATE INDEX IF NOT EXISTS ix_exports_conversation_id
     ON exports (conversation_id);
+
+CREATE TABLE IF NOT EXISTS trip_summaries (
+    conversation_id uuid PRIMARY KEY REFERENCES conversations (id),
+    user_id uuid NOT NULL,
+    destination text NOT NULL,
+    start_date date,
+    end_date date,
+    trip_type text,
+    preferences text[] NOT NULL DEFAULT '{}' CHECK (cardinality(preferences) <= 3),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS ix_trip_summaries_user_id_updated_at
+    ON trip_summaries (user_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS suggestion_settings (
+    user_id uuid PRIMARY KEY,
+    enabled boolean NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now()
+);

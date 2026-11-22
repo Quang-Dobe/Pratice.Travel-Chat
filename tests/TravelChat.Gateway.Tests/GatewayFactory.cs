@@ -3,20 +3,28 @@ using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Security.Claims;
+using System.Xml.Linq;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.DataProtection.KeyManagement;
+using Microsoft.AspNetCore.DataProtection.Repositories;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.Caching.Distributed;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Protocols;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
+using StackExchange.Redis;
 using TravelChat.Gateway.Features.Auth;
+using TravelChat.Gateway.Features.Token;
 using Yarp.ReverseProxy.Forwarder;
 
 namespace TravelChat.Gateway.Tests;
@@ -79,6 +87,55 @@ public sealed class DestinationStub : HttpMessageHandler
         new(HttpStatusCode.OK) { Content = new StringContent("ok") };
 }
 
+public sealed class InMemoryXmlRepository : IXmlRepository
+{
+    private readonly List<XElement> _elements = [];
+
+    public IReadOnlyCollection<XElement> GetAllElements()
+    {
+        lock (_elements)
+        {
+            return [.. _elements];
+        }
+    }
+
+    public void StoreElement(XElement element, string friendlyName)
+    {
+        lock (_elements)
+        {
+            _elements.Add(element);
+        }
+    }
+}
+
+public sealed class InMemorySigningKeySlot : ISigningKeySlot
+{
+    private readonly object _gate = new();
+    private byte[]? _bytes;
+
+    public byte[]? Read()
+    {
+        lock (_gate)
+        {
+            return _bytes?.ToArray();
+        }
+    }
+
+    public bool TryCreate(byte[] bytes)
+    {
+        lock (_gate)
+        {
+            if (_bytes is not null)
+            {
+                return false;
+            }
+
+            _bytes = bytes.ToArray();
+            return true;
+        }
+    }
+}
+
 public sealed class StubForwarderClientFactory(HttpMessageHandler handler) : IForwarderHttpClientFactory
 {
     public HttpMessageInvoker CreateClient(ForwarderHttpClientContext context) =>
@@ -106,8 +163,20 @@ public sealed class GatewayFactory : WebApplicationFactory<Program>
                 ["AzureAd:ClientSecret"] = "test-secret",
             }));
 
+        builder.UseSetting("ConnectionStrings:Redis", "localhost:6379");
+        builder.UseSetting("DataProtection:KeyVaultKeyId", "");
+
         builder.ConfigureServices(services =>
         {
+            services.Replace(ServiceDescriptor.Singleton<IDistributedCache>(
+                new MemoryDistributedCache(Options.Create(new MemoryDistributedCacheOptions()))));
+            services.Replace(ServiceDescriptor.Singleton<IConnectionMultiplexer>(
+                _ => throw new InvalidOperationException("Redis must not be used in Gateway tests.")));
+            services.Replace(ServiceDescriptor.Singleton<ISigningKeySlot>(new InMemorySigningKeySlot()));
+            services.PostConfigure<KeyManagementOptions>(options =>
+                options.XmlRepository = new InMemoryXmlRepository());
+            services.Replace(ServiceDescriptor.Singleton<IDataProtectionProvider>(
+                new EphemeralDataProtectionProvider()));
             services.AddSingleton<IStartupFilter, LocalPortStartupFilter>();
             services.AddSingleton<IStartupFilter, TestEndpointsStartupFilter>();
             services.AddHttpClient<InviteCheck>().ConfigurePrimaryHttpMessageHandler(() => QUser);

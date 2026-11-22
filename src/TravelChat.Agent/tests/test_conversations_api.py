@@ -1,7 +1,11 @@
 import asyncio
 import json
+import logging
+import time
+from collections import Counter
 from collections.abc import Iterator, Sequence
-from datetime import timedelta
+from dataclasses import replace
+from datetime import date, timedelta
 from typing import Any, Literal, cast
 from uuid import UUID, uuid4
 
@@ -31,12 +35,16 @@ from src import main as main_module
 from src.auth import CurrentUser, get_current_user
 from src.conversations.router import PlanCardItem
 from src.conversations.router import _build_messages as build_messages
+from src.graph.builder import build_graph
 from src.graph.classify import Classification
 from src.graph.deps import PlannerDeps
+from src.graph.refuse import REFUSAL
 from src.graph.state import PlanCard
 from src.graph.suggest import Pills
+from src.graph.summarize import TripSummary
 from src.main import app
 from src.settings import Settings, Tier, get_settings
+from src.starters import repository as starters_repository
 from src.utils.modules import load
 from src.utils.reviews import PinName, PinNames
 from src.utils.tools import Tools, calculator, time_tool, with_events
@@ -97,6 +105,7 @@ HOTELS = listing("h", "Hotel", 600.0)
 
 class FakeChat(BaseChatModel):
     script: Any = None
+    delay: float = 0.0
 
     @property
     def _llm_type(self) -> str:
@@ -117,7 +126,9 @@ class FakeChat(BaseChatModel):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
-        return ChatResult(generations=[ChatGeneration(message=self._next())])
+        reply = self._next()
+        time.sleep(self.delay)
+        return ChatResult(generations=[ChatGeneration(message=reply)])
 
     def _stream(
         self,
@@ -127,6 +138,7 @@ class FakeChat(BaseChatModel):
         **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
         reply = self._next()
+        time.sleep(self.delay)
         chunks = [
             tool_call_chunk(
                 name=call["name"], args=json.dumps(call["args"]), id=call["id"], index=i
@@ -167,6 +179,7 @@ class FakeProvider:
         self.scripts: dict[str, list[Any]] = {}
         self.queues: dict[str, list[Any]] = {}
         self.fetch_requests: list[str] = []
+        self.delays: dict[str, float] = {}
         self.reset()
 
     def reset(self) -> None:
@@ -181,10 +194,12 @@ class FakeProvider:
             "Pills": [Pills(items=["Plan a trip", "Check flights"])],
             "ItineraryDraft": [itinerary_module.ItineraryDraft(days=days)],
             "PinNames": [PinNames(items=[])],
+            "TripSummary": [TripSummary(trip_type="food", preferences=["street food"])],
         }
         queue_turns(self.queues, classification())
         self.model_calls = []
         self.fetch_requests = []
+        self.delays = {}
 
     @property
     def errors(self) -> type[Exception]:
@@ -192,7 +207,8 @@ class FakeProvider:
 
     def model(self, tier: Tier) -> BaseChatModel:
         self.model_calls.append(tier)
-        return FakeChat(script=self.scripts["low" if tier == "low" else "medium"])
+        script = self.scripts["low" if tier == "low" else "medium"]
+        return FakeChat(script=script, delay=self.delays.get(tier, 0.0))
 
     def system(self, prompt: str, hint: str) -> SystemMessage:
         return SystemMessage(f"{prompt}\n{hint}")
@@ -202,7 +218,7 @@ class FakeProvider:
     ) -> Runnable[Any, Any]:
         name = tools[0].name
         key = name.split("__")[0] if "__" in name else "answer"
-        chat = FakeChat(script=self.scripts[key])
+        chat = FakeChat(script=self.scripts[key], delay=getattr(model, "delay", 0.0))
         if key != "fetch":
             return chat
 
@@ -218,6 +234,7 @@ class FakeProvider:
         name = schema.__name__
 
         def pick(_: Any) -> BaseModel:
+            time.sleep(getattr(model, "delay", 0.0))
             queue = self.queues[name]
             item = queue.pop(0) if len(queue) > 1 else queue[0]
             if isinstance(item, Exception):
@@ -623,6 +640,51 @@ def test_send_streams_tool_calls_tokens_pills_then_done_and_turn_is_readable(
     assert "pendingApprovalId" not in detail
 
 
+def first_words_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [record for record in caplog.records if "First words" in record.getMessage()]
+
+
+def test_an_answer_turn_logs_one_first_words_line(
+    client: TestClient, user_a: dict[str, str], caplog: pytest.LogCaptureFixture
+) -> None:
+    script_weather_answer()
+    conversation_id = create(client, user_a, "weather in Tokyo")["id"]
+
+    send(client, user_a, conversation_id, "weather in Tokyo")
+
+    records = first_words_records(caplog)
+    assert len(records) == 1
+    assert records[0].levelno == logging.INFO
+    assert records[0].name == "src.conversations.router"
+    assert records[0].args is not None
+    conversation, elapsed_ms = cast("tuple[UUID, int]", records[0].args)
+    assert str(conversation) == conversation_id
+    assert elapsed_ms >= 0
+
+
+def test_an_off_topic_turn_logs_one_first_words_line(
+    client: TestClient, user_a: dict[str, str], caplog: pytest.LogCaptureFixture
+) -> None:
+    queue_turns(PROVIDER.queues, classification(verdict="off_topic"))
+    conversation_id = create(client, user_a, "tell me a joke")["id"]
+
+    send(client, user_a, conversation_id, "tell me a joke")
+
+    records = first_words_records(caplog)
+    assert len(records) == 1
+    assert records[0].levelno == logging.INFO
+    assert records[0].name == "src.conversations.router"
+    assert records[0].args is not None
+    _, elapsed_ms = cast("tuple[UUID, int]", records[0].args)
+    assert elapsed_ms >= 0
+
+
+def test_the_root_logger_keeps_its_default_level() -> None:
+    assert main_module.app is not None
+    assert logging.getLogger().level == logging.WARNING
+    assert logging.getLogger("src").level == logging.INFO
+
+
 def test_text_from_two_model_calls_is_one_bubble_live_and_reloaded(
     client: TestClient, user_a: dict[str, str]
 ) -> None:
@@ -642,10 +704,121 @@ def test_text_from_two_model_calls_is_one_bubble_live_and_reloaded(
     ]
 
 
+GREETING = "Sure, let me look into that."
+
+
+def test_a_travel_turn_streams_the_greeting_one_break_then_the_answer(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    PROVIDER.scripts["low"].append(AIMessage(GREETING))
+    script_weather_answer()
+    conversation_id = create(client, user_a, "weather in Tokyo")["id"]
+
+    frames = parse_frames(send(client, user_a, conversation_id, "weather in Tokyo"))
+
+    assert tokens_of(frames) == [GREETING, "\n\n", ANSWER]
+    assert "notice" not in events_of(frames)
+
+
+def test_a_plan_turn_streams_the_greeting_one_break_then_the_plan_text(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    PROVIDER.scripts["low"].append(AIMessage(GREETING))
+    script_demo()
+    conversation_id = create(client, user_a, "3 days in Tokyo from Singapore")["id"]
+
+    frames = parse_frames(send(client, user_a, conversation_id, "3 days in Tokyo from Singapore"))
+
+    tokens = tokens_of(frames)
+    assert tokens[:2] == [GREETING, "\n\n"]
+    assert tokens.count("\n\n") == 1
+    assert "".join(tokens[2:]).startswith("Here is your 3-day plan for Tokyo")
+
+
+def test_a_reopened_greeted_answer_turn_reads_as_its_streamed_tokens_in_one_reply(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    PROVIDER.scripts["low"].append(AIMessage(GREETING))
+    script_weather_answer()
+    conversation_id = create(client, user_a, "weather in Tokyo")["id"]
+
+    frames = parse_frames(send(client, user_a, conversation_id, "weather in Tokyo"))
+
+    streamed = "".join(tokens_of(frames))
+    assert streamed == f"{GREETING}\n\n{ANSWER}"
+    detail = detail_of(client, user_a, conversation_id)
+    assert detail["messages"] == [
+        user_item("weather in Tokyo"),
+        assistant_item(streamed, calls=[WEATHER_CALL], pills=PILLS),
+    ]
+
+
+def test_a_reopened_greeted_plan_turn_reads_as_its_streamed_tokens_in_one_reply(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    PROVIDER.scripts["low"].append(AIMessage(GREETING))
+    script_demo()
+    conversation_id = create(client, user_a, "3 days in Tokyo from Singapore")["id"]
+
+    frames = parse_frames(send(client, user_a, conversation_id, "3 days in Tokyo from Singapore"))
+
+    streamed = "".join(tokens_of(frames))
+    assert streamed.startswith(f"{GREETING}\n\n")
+    detail = detail_of(client, user_a, conversation_id)
+    [user, reply] = detail["messages"]
+    assert user == user_item("3 days in Tokyo from Singapore")
+    assert reply["text"] == streamed
+    assert reply["planCard"] is not None
+
+
+def test_a_reply_saved_with_a_greeting_builds_as_greeting_break_reply() -> None:
+    message = AIMessage("Sunny.", id="m1", additional_kwargs={"greeting": "Happy to help."})
+
+    [item] = build_messages([message], [], [])
+
+    assert item.text == "Happy to help.\n\nSunny."
+
+
+@pytest.mark.parametrize("saved", [{}, {"greeting": ""}, {"greeting": "  "}])
+def test_a_reply_saved_without_a_greeting_builds_as_its_own_text(saved: dict[str, str]) -> None:
+    [item] = build_messages([AIMessage("Sunny.", id="m1", additional_kwargs=saved)], [], [])
+
+    assert item.text == "Sunny."
+
+
+def test_an_off_topic_turn_streams_the_refusal_with_no_greeting_and_no_break(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    PROVIDER.scripts["low"].append(AIMessage(GREETING))
+    queue_turns(PROVIDER.queues, classification(verdict="off_topic"))
+    conversation_id = create(client, user_a, "tell me a joke")["id"]
+
+    frames = parse_frames(send(client, user_a, conversation_id, "tell me a joke"))
+
+    tokens = tokens_of(frames)
+    assert "".join(tokens) == REFUSAL
+    assert GREETING not in tokens
+    assert "\n\n" not in tokens
+
+
+def test_a_failed_greeting_adds_no_break_and_no_notice(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    PROVIDER.scripts["low"].append(RuntimeError("greeting down"))
+    script_weather_answer()
+    conversation_id = create(client, user_a, "weather in Tokyo")["id"]
+
+    frames = parse_frames(send(client, user_a, conversation_id, "weather in Tokyo"))
+
+    assert tokens_of(frames) == [ANSWER]
+    assert "notice" not in events_of(frames)
+
+
 def test_title_is_replaced_after_the_first_turn_only(
     client: TestClient, user_a: dict[str, str]
 ) -> None:
     PROVIDER.scripts["answer"] += [AIMessage("First."), AIMessage("Second.")]
+    PROVIDER.scripts["low"] += [AIMessage("Hello."), AIMessage("Sure.")]
     conversation_id = create(client, user_a, "weather in Tokyo please")["id"]
 
     send(client, user_a, conversation_id, "weather in Tokyo please")
@@ -653,7 +826,7 @@ def test_title_is_replaced_after_the_first_turn_only(
 
     detail = detail_of(client, user_a, conversation_id)
     assert detail["title"] == TITLE
-    assert PROVIDER.model_calls.count("low") == 1
+    assert PROVIDER.model_calls.count("low") == 3
     listed = client.get("/conversations", headers=user_a).json()["items"]
     assert [item["title"] for item in listed] == [TITLE]
 
@@ -800,17 +973,18 @@ def test_approve_confirms_the_picks_and_the_old_card_reloads_as_approved(
 def test_reject_needs_no_ids_and_asks_what_to_change(
     client: TestClient, user_a: dict[str, str]
 ) -> None:
+    PROVIDER.scripts["low"][:] = [AIMessage(GREETING)]
     PROVIDER.scripts["medium"].append(AIMessage("What would you like to change?"))
     conversation_id = create(client, user_a, "trip")["id"]
 
     frames = parse_frames(send(client, user_a, conversation_id, "Reject", {"type": "reject"}))
 
-    assert "".join(tokens_of(frames)) == "What would you like to change?"
+    assert tokens_of(frames) == [GREETING, "\n\n", "What would you like to change?"]
     assert events_of(frames)[-2:] == ["pills", "done"]
     detail = detail_of(client, user_a, conversation_id)
     assert [message["text"] for message in detail["messages"]] == [
         "Reject",
-        "What would you like to change?",
+        f"{GREETING}\n\nWhat would you like to change?",
     ]
 
 
@@ -832,13 +1006,16 @@ def test_a_budget_change_streams_the_question_about_where_the_money_goes(
 def test_an_approve_with_no_plan_gets_the_note_and_no_card(
     client: TestClient, user_a: dict[str, str]
 ) -> None:
+    PROVIDER.scripts["low"][:] = [AIMessage(GREETING)]
     conversation_id = create(client, user_a, "trip")["id"]
     action = {"type": "approve", "cardId": "ghost", "flightId": "f1", "hotelId": "h1"}
 
     frames = parse_frames(send(client, user_a, conversation_id, "Approve", action))
 
     assert "plan_card" not in events_of(frames)
-    assert "".join(tokens_of(frames)).startswith("There is no plan to approve yet.")
+    tokens = tokens_of(frames)
+    assert tokens[:2] == [GREETING, "\n\n"]
+    assert "".join(tokens[2:]).startswith("There is no plan to approve yet.")
 
 
 def airport(code: str, name: str) -> dict[str, Any]:
@@ -1363,3 +1540,613 @@ def test_the_detail_of_a_message_carries_the_artifacts_saved_on_it() -> None:
     [item] = build_messages([message], [], [])
 
     assert item.model_dump(by_alias=True)["artifacts"] == saved
+
+
+TIER_DELAYS = {"low": 0.05, "medium": 0.2, "high": 0.5}
+TRIP_TEXT = "3 days in Tokyo from Singapore"
+MESSAGES = {
+    "travel": "weather in Tokyo",
+    "plan": TRIP_TEXT,
+    "off_topic": "tell me a joke",
+}
+
+
+def script_kind(kind: str, greeted: bool) -> None:
+    PROVIDER.reset()
+    if greeted:
+        PROVIDER.scripts["low"].append(AIMessage(GREETING))
+    if kind == "off_topic":
+        queue_turns(PROVIDER.queues, classification(verdict="off_topic"))
+    elif kind == "plan":
+        script_demo()
+    else:
+        script_weather_answer()
+        queue_turns(PROVIDER.queues, classification(verdict="travel"))
+
+
+def run_turn(
+    client: TestClient, headers: dict[str, str], text: str
+) -> tuple[str, list[tuple[str, Any]]]:
+    conversation_id = create(client, headers, text)["id"]
+    return conversation_id, parse_frames(send(client, headers, conversation_id, text))
+
+
+def first_words_ms(caplog: pytest.LogCaptureFixture) -> int:
+    [record] = first_words_records(caplog)
+    assert record.args is not None
+    _, elapsed_ms = cast("tuple[UUID, int]", record.args)
+    return elapsed_ms
+
+
+def timed_first_words(
+    client: TestClient, headers: dict[str, str], caplog: pytest.LogCaptureFixture, text: str
+) -> int:
+    conversation_id = create(client, headers, text)["id"]
+    caplog.clear()
+    send(client, headers, conversation_id, text)
+    return first_words_ms(caplog)
+
+
+def graph_with_classify_tier(tier: Tier) -> Any:
+    planner = app.state.planner
+    settings = planner.settings.model_copy(update={"classify_tier": tier})
+    return build_graph(app.state.graph.checkpointer, replace(planner, settings=settings))
+
+
+def test_e2e_3_approving_a_plan_opens_with_a_greeting(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    script_demo()
+    conversation_id, first = run_turn(client, user_a, TRIP_TEXT)
+    card = next(data for event, data in first if event == "plan_card")
+    PROVIDER.scripts["low"].append(AIMessage(GREETING))
+    action = {"type": "approve", "cardId": card["id"], "flightId": "f2", "hotelId": "h3"}
+
+    frames = parse_frames(send(client, user_a, conversation_id, "Approve", action))
+
+    tokens = tokens_of(frames)
+    assert tokens[:2] == [GREETING, "\n\n"]
+    assert "https://flight.example/f2" in "".join(tokens[2:])
+    assert "notice" not in events_of(frames)
+
+
+def test_e2e_4_rejecting_a_plan_opens_with_a_greeting(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    script_demo()
+    conversation_id, _ = run_turn(client, user_a, TRIP_TEXT)
+    PROVIDER.scripts["low"].append(AIMessage(GREETING))
+    PROVIDER.scripts["medium"].append(AIMessage("What would you like to change?"))
+
+    frames = parse_frames(send(client, user_a, conversation_id, "Reject", {"type": "reject"}))
+
+    assert tokens_of(frames) == [GREETING, "\n\n", "What would you like to change?"]
+    assert "notice" not in events_of(frames)
+
+
+@pytest.mark.parametrize("kind", ["travel", "off_topic"])
+def test_e2e_6_classify_asks_the_medium_tier_model_by_default(
+    client: TestClient, user_a: dict[str, str], kind: str
+) -> None:
+    script_kind(kind, greeted=False)
+
+    run_turn(client, user_a, MESSAGES[kind])
+
+    assert get_settings().classify_tier == "medium"
+    assert PROVIDER.model_calls[0] == "medium"
+    assert "high" not in PROVIDER.model_calls
+
+
+@pytest.mark.parametrize("kind", ["travel", "plan", "off_topic"])
+def test_e2e_7_first_words_arrive_sooner_than_today(
+    client: TestClient,
+    user_a: dict[str, str],
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+) -> None:
+    text = MESSAGES[kind]
+    with monkeypatch.context() as today_path:
+        today_path.setattr(app.state, "graph", graph_with_classify_tier("high"))
+        script_kind(kind, greeted=False)
+        PROVIDER.delays.update(TIER_DELAYS)
+        before = timed_first_words(client, user_a, caplog, text)
+    script_kind(kind, greeted=True)
+    PROVIDER.delays.update(TIER_DELAYS)
+
+    after = timed_first_words(client, user_a, caplog, text)
+
+    assert after < before
+
+
+def test_e2e_8_a_reopened_conversation_keeps_each_greeting_in_its_reply(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    script_demo()
+    PROVIDER.scripts["low"].append(AIMessage("Happy to plan that."))
+    conversation_id, plan_frames = run_turn(client, user_a, TRIP_TEXT)
+    PROVIDER.scripts["low"].append(AIMessage(GREETING))
+    script_weather_answer()
+    queue_turns(PROVIDER.queues, classification())
+    answer_frames = parse_frames(send(client, user_a, conversation_id, "weather in Tokyo"))
+
+    streamed_plan = "".join(tokens_of(plan_frames))
+    streamed_answer = "".join(tokens_of(answer_frames))
+    assert streamed_plan.startswith("Happy to plan that.\n\n")
+    assert streamed_answer == f"{GREETING}\n\n{ANSWER}"
+    detail = detail_of(client, user_a, conversation_id)
+    texts = [message["text"] for message in detail["messages"]]
+    assert texts == [TRIP_TEXT, streamed_plan, "weather in Tokyo", streamed_answer]
+
+
+def test_e2e_9_each_kind_of_message_lands_on_the_same_path_as_today(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    script_kind("off_topic", greeted=False)
+    _, refused = run_turn(client, user_a, MESSAGES["off_topic"])
+    script_kind("travel", greeted=False)
+    _, answered = run_turn(client, user_a, MESSAGES["travel"])
+    script_kind("plan", greeted=False)
+    _, planned = run_turn(client, user_a, MESSAGES["plan"])
+
+    assert "".join(tokens_of(refused)) == REFUSAL
+    assert "plan_card" not in events_of(refused)
+    assert tokens_of(answered) == [ANSWER]
+    assert "plan_card" not in events_of(answered)
+    assert "tool_call" in events_of(answered)
+    assert "plan_card" in events_of(planned)
+
+
+def test_e2e_11_the_greeting_adds_one_low_tier_call_and_an_off_topic_turn_adds_none(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    script_weather_answer()
+    conversation_id, _ = run_turn(client, user_a, "weather in Tokyo")
+    PROVIDER.model_calls.clear()
+    PROVIDER.scripts["low"].append(AIMessage(GREETING))
+    script_weather_answer()
+
+    send(client, user_a, conversation_id, "and tomorrow")
+
+    assert PROVIDER.model_calls.count("low") == 1
+    assert PROVIDER.scripts["low"] == []
+    PROVIDER.model_calls.clear()
+    PROVIDER.scripts["low"].append(AIMessage(GREETING))
+    queue_turns(PROVIDER.queues, classification(verdict="off_topic"))
+
+    send(client, user_a, conversation_id, "tell me a joke")
+
+    assert PROVIDER.model_calls.count("low") == 0
+    assert len(PROVIDER.scripts["low"]) == 1
+
+
+def test_e2e_12_no_words_appear_before_classify_has_finished(
+    client: TestClient, user_a: dict[str, str], caplog: pytest.LogCaptureFixture
+) -> None:
+    script_kind("travel", greeted=True)
+    PROVIDER.delays["medium"] = 0.3
+    conversation_id = create(client, user_a, MESSAGES["travel"])["id"]
+    caplog.clear()
+
+    frames = parse_frames(send(client, user_a, conversation_id, MESSAGES["travel"]))
+
+    assert tokens_of(frames) == [GREETING, "\n\n", ANSWER]
+    elapsed_ms = first_words_ms(caplog)
+    assert elapsed_ms >= 290
+    assert elapsed_ms < 800
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        ("travel", {"low": 2, "medium": 3}),
+        ("plan", {"low": 3, "medium": 4}),
+    ],
+)
+def test_e2e_13_every_other_step_keeps_its_model_tier(
+    client: TestClient, user_a: dict[str, str], kind: str, expected: dict[str, int]
+) -> None:
+    script_kind(kind, greeted=True)
+
+    run_turn(client, user_a, MESSAGES[kind])
+
+    settings = get_settings()
+    assert (settings.answer_tier, settings.title_tier, settings.helper_tier) == (
+        "medium",
+        "low",
+        "low",
+    )
+    assert Counter(PROVIDER.model_calls) == expected
+
+
+def test_e2e_14_the_greeting_then_the_answer_then_the_pills_arrive_in_order(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    script_kind("travel", greeted=True)
+
+    _, frames = run_turn(client, user_a, MESSAGES["travel"])
+
+    events = events_of(frames)
+    token_positions = [index for index, event in enumerate(events) if event == "token"]
+    assert tokens_of(frames) == [GREETING, "\n\n", ANSWER]
+    assert token_positions[0] < events.index("tool_call")
+    assert token_positions[-1] < events.index("pills")
+    assert events[-2:] == ["pills", "done"]
+    assert frames[-2][1] == {"items": PILLS}
+
+
+SUMMARY_BUDGET = 3
+
+
+def script_dated_plan() -> tuple[str, str]:
+    script_demo()
+    start = (today() + timedelta(days=30)).isoformat()
+    end = (today() + timedelta(days=33)).isoformat()
+    queue_turns(
+        PROVIDER.queues,
+        classification(
+            route="plan",
+            verdict="travel",
+            destination="Tokyo",
+            origin="Singapore",
+            start_date=start,
+            end_date=end,
+            interests=["food"],
+        ),
+    )
+    PROVIDER.queues["TripSummary"] = [
+        TripSummary(trip_type="food", preferences=["street food"])
+    ] * SUMMARY_BUDGET
+    return start, end
+
+
+def summary_calls() -> int:
+    return SUMMARY_BUDGET - len(PROVIDER.queues["TripSummary"])
+
+
+def stored_summaries(client: TestClient, headers: dict[str, str]) -> list[Any]:
+    assert client.portal is not None
+    pool = app.state.pool
+    uid = UUID(headers[USER_HEADER])
+    return list(client.portal.call(starters_repository.newest_summaries, pool, uid))
+
+
+def switch_remembering(client: TestClient, headers: dict[str, str], enabled: bool) -> None:
+    assert client.portal is not None
+    pool = app.state.pool
+    uid = UUID(headers[USER_HEADER])
+    client.portal.call(starters_repository.set_enabled, pool, uid, enabled)
+
+
+def test_a_plan_turn_stores_one_summary_for_its_owner_with_destination_and_dates(
+    client: TestClient, user_a: dict[str, str], user_b: dict[str, str]
+) -> None:
+    start, end = script_dated_plan()
+    conversation_id, _ = run_turn(client, user_a, MESSAGES["plan"])
+
+    [row] = stored_summaries(client, user_a)
+
+    assert str(row.conversation_id) == conversation_id
+    assert row.destination == "Tokyo"
+    assert (row.start_date.isoformat(), row.end_date.isoformat()) == (start, end)
+    assert row.trip_type == "food"
+    assert row.preferences == ["street food"]
+    assert stored_summaries(client, user_b) == []
+    assert summary_calls() == 1
+
+
+def test_no_summary_frame_is_ever_sent(client: TestClient, user_a: dict[str, str]) -> None:
+    script_dated_plan()
+
+    _, frames = run_turn(client, user_a, MESSAGES["plan"])
+
+    assert "summary" not in events_of(frames)
+    assert "notice" not in events_of(frames)
+    assert events_of(frames)[-2:] == ["pills", "done"]
+
+
+def test_with_remembering_off_there_is_no_summary_call_and_no_row(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    switch_remembering(client, user_a, False)
+    script_dated_plan()
+
+    run_turn(client, user_a, MESSAGES["plan"])
+
+    assert summary_calls() == 0
+    assert stored_summaries(client, user_a) == []
+
+
+def test_a_second_turn_with_the_same_details_makes_no_second_summary_call(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    script_dated_plan()
+    conversation_id, _ = run_turn(client, user_a, MESSAGES["plan"])
+    assert summary_calls() == 1
+    script_weather_answer()
+    queue_turns(PROVIDER.queues, classification())
+
+    send(client, user_a, conversation_id, "and what about the weather?")
+
+    assert summary_calls() == 1
+    assert len(stored_summaries(client, user_a)) == 1
+
+
+def test_when_saving_the_summary_fails_the_turn_still_ends_with_pills_then_done(
+    client: TestClient, user_a: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def failing_upsert(*args: Any, **fields: Any) -> bool:
+        raise ValueError("bad date")
+
+    monkeypatch.setattr(starters_repository, "upsert_summary", failing_upsert)
+    script_dated_plan()
+
+    _, frames = run_turn(client, user_a, MESSAGES["plan"])
+
+    events = events_of(frames)
+    assert events[-2:] == ["pills", "done"]
+    assert "notice" not in events
+    assert stored_summaries(client, user_a) == []
+
+
+STARTERS_PATH = "/conversations/starters"
+MADE_UP_PHRASE = "zorblax-quux-7731"
+
+
+def next_march() -> tuple[str, str]:
+    now = today()
+    year = now.year if now.month < 3 else now.year + 1
+    return date(year, 3, 10).isoformat(), date(year, 3, 14).isoformat()
+
+
+def script_trip(
+    destination: str,
+    *,
+    dates: tuple[str, str] | None = None,
+    trip_type: str = "food",
+    preferences: list[str] | None = None,
+) -> None:
+    script_demo()
+    fields: dict[str, Any] = {"length_days": 3}
+    if dates is not None:
+        fields = {"start_date": dates[0], "end_date": dates[1]}
+    queue_turns(
+        PROVIDER.queues,
+        classification(
+            route="plan",
+            verdict="travel",
+            destination=destination,
+            origin="Singapore",
+            interests=["food"],
+            **fields,
+        ),
+    )
+    PROVIDER.queues["TripSummary"] = [
+        TripSummary(trip_type=trip_type, preferences=preferences or [])
+    ]
+
+
+def discuss_trip(
+    client: TestClient,
+    headers: dict[str, str],
+    destination: str,
+    *,
+    text: str | None = None,
+    dates: tuple[str, str] | None = None,
+    trip_type: str = "food",
+    preferences: list[str] | None = None,
+) -> str:
+    PROVIDER.reset()
+    script_trip(destination, dates=dates, trip_type=trip_type, preferences=preferences)
+    conversation_id, _ = run_turn(client, headers, text or f"3 days in {destination}")
+    return conversation_id
+
+
+def starters_of(client: TestClient, headers: dict[str, str]) -> dict[str, Any]:
+    response = client.get(STARTERS_PATH, headers=headers)
+    assert response.status_code == 200
+    body: dict[str, Any] = response.json()
+    return body
+
+
+def set_starters(client: TestClient, headers: dict[str, str], enabled: bool) -> None:
+    response = client.put(f"{STARTERS_PATH}/setting", json={"enabled": enabled}, headers=headers)
+    assert response.status_code == 200
+    assert response.json() == {"enabled": enabled}
+
+
+def clear_starters(client: TestClient, headers: dict[str, str]) -> None:
+    assert client.delete(f"{STARTERS_PATH}/history", headers=headers).status_code == 204
+
+
+def test_gs_e2e_1_a_past_trip_shows_up_as_one_to_four_starters_about_it(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    discuss_trip(client, user_a, "Da Nang", dates=next_march())
+
+    body = starters_of(client, user_a)
+
+    assert body["enabled"] is True
+    assert 1 <= len(body["items"]) <= 4
+    assert all("Da Nang" in item for item in body["items"])
+    assert "March" in body["items"][0]
+
+
+def test_gs_e2e_3_the_setting_is_on_for_a_user_who_never_touched_it(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    assert starters_of(client, user_a) == {"enabled": True, "items": []}
+
+
+def test_gs_e2e_5_clearing_the_history_removes_starters_and_keeps_every_conversation(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    ids = [discuss_trip(client, user_a, city) for city in ("Da Nang", "Hanoi", "Hue")]
+    assert starters_of(client, user_a)["items"] != []
+    before = [detail_of(client, user_a, conversation_id) for conversation_id in ids]
+
+    clear_starters(client, user_a)
+
+    assert starters_of(client, user_a) == {"enabled": True, "items": []}
+    after = [detail_of(client, user_a, conversation_id) for conversation_id in ids]
+    assert after == before
+    assert all(len(detail["messages"]) == 2 for detail in after)
+    listed = client.get("/conversations", headers=user_a).json()["items"]
+    assert {item["id"] for item in listed} == set(ids)
+
+
+def test_gs_e2e_6_a_new_trip_after_a_clear_feeds_new_starters(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    discuss_trip(client, user_a, "Da Nang")
+    clear_starters(client, user_a)
+
+    discuss_trip(client, user_a, "Hanoi")
+
+    items = starters_of(client, user_a)["items"]
+    assert items != []
+    assert all("Hanoi" in item for item in items)
+    assert not any("Da Nang" in item for item in items)
+
+
+def test_gs_e2e_7_the_setting_survives_a_new_sign_in(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    discuss_trip(client, user_a, "Da Nang")
+
+    set_starters(client, user_a, False)
+
+    for _ in range(2):
+        assert starters_of(client, user_a) == {"enabled": False, "items": []}
+    assert client.portal is not None
+    uid = UUID(user_a[USER_HEADER])
+    assert client.portal.call(starters_repository.get_enabled, app.state.pool, uid) is False
+
+
+def test_gs_e2e_8_follow_up_pills_behave_as_today_with_past_summaries(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    discuss_trip(client, user_a, "Da Nang")
+    assert starters_of(client, user_a)["enabled"] is True
+    script_kind("travel", greeted=False)
+
+    conversation_id, frames = run_turn(client, user_a, MESSAGES["travel"])
+
+    assert events_of(frames)[-2:] == ["pills", "done"]
+    assert "summary" not in events_of(frames)
+    items = frames[-2][1]["items"]
+    assert 2 <= len(items) <= 4
+    assert items == PILLS
+    assert detail_of(client, user_a, conversation_id)["messages"][-1]["pills"] == PILLS
+
+
+def test_gs_e2e_9_another_users_trips_never_reach_a_user_with_none(
+    client: TestClient, user_a: dict[str, str], user_b: dict[str, str]
+) -> None:
+    discuss_trip(client, user_a, "Da Nang")
+    assert starters_of(client, user_a)["items"] != []
+
+    body = starters_of(client, user_b)
+
+    assert body == {"enabled": True, "items": []}
+    assert "Da Nang" not in json.dumps(body)
+
+
+async def summary_columns(pool: Any) -> set[str]:
+    async with pool.connection() as connection:
+        cursor = await connection.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'trip_summaries'"
+        )
+        return {row["column_name"] for row in await cursor.fetchall()}
+
+
+def test_gs_e2e_10_the_kept_summary_holds_only_trip_fields(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    text = f"5 days in Da Nang, I adore {MADE_UP_PHRASE} noodles"
+    conversation_id = discuss_trip(
+        client, user_a, "Da Nang", text=text, preferences=["street food"]
+    )
+    detail = detail_of(client, user_a, conversation_id)
+    assert MADE_UP_PHRASE in detail["messages"][0]["text"]
+
+    [row] = stored_summaries(client, user_a)
+
+    assert row.destination == "Da Nang"
+    assert row.trip_type == "food"
+    assert row.preferences == ["street food"]
+    assert MADE_UP_PHRASE not in repr(row)
+    assert MADE_UP_PHRASE not in json.dumps(starters_of(client, user_a))
+    assert client.portal is not None
+    columns = client.portal.call(summary_columns, app.state.pool)
+    assert columns == {
+        "conversation_id",
+        "user_id",
+        "destination",
+        "start_date",
+        "end_date",
+        "trip_type",
+        "preferences",
+        "updated_at",
+    }
+
+
+def test_gs_e2e_11_opening_new_chat_makes_no_model_call(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    discuss_trip(client, user_a, "Da Nang")
+    PROVIDER.model_calls.clear()
+
+    for _ in range(3):
+        assert starters_of(client, user_a)["items"] != []
+
+    assert PROVIDER.model_calls == []
+
+
+def test_gs_e2e_13_with_the_setting_off_new_trips_are_not_kept_but_old_ones_stay(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    discuss_trip(client, user_a, "Da Nang")
+    set_starters(client, user_a, False)
+
+    discuss_trip(client, user_a, "Hanoi")
+    assert [row.destination for row in stored_summaries(client, user_a)] == ["Da Nang"]
+    set_starters(client, user_a, True)
+
+    items = starters_of(client, user_a)["items"]
+    assert items != []
+    assert all("Da Nang" in item for item in items)
+    assert not any("Hanoi" in item for item in items)
+
+
+def test_gs_e2e_14_the_summary_follows_a_changed_destination(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    conversation_id = discuss_trip(client, user_a, "Paris")
+    assert any("Paris" in item for item in starters_of(client, user_a)["items"])
+    PROVIDER.reset()
+    script_trip("Rome")
+
+    send(client, user_a, conversation_id, "Change the destination to Rome")
+
+    [row] = stored_summaries(client, user_a)
+    assert row.destination == "Rome"
+    items = starters_of(client, user_a)["items"]
+    assert items != []
+    assert all("Rome" in item for item in items)
+    assert not any("Paris" in item for item in items)
+
+
+def test_gs_e2e_15_only_the_five_newest_summarized_conversations_count(
+    client: TestClient, user_a: dict[str, str]
+) -> None:
+    cities = ["Lima", "Cairo", "Hue", "Cairo", "Hue", "Cairo"]
+    for city in cities:
+        discuss_trip(client, user_a, city)
+
+    items = starters_of(client, user_a)["items"]
+
+    assert 1 <= len(items) <= 4
+    assert not any("Lima" in item for item in items)
+    assert any("Cairo" in item for item in items)
+    assert any("Hue" in item for item in items)
